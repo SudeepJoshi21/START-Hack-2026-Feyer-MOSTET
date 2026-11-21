@@ -48,6 +48,9 @@ def main(report_path, arrays_path, original_path=None):
     expected = np.asarray(reference["sensitivities"], dtype=np.float64)
     v = report["validation"]
     print(f"run: {report_path}  (xla_flags: {report['environment'].get('xla_flags')})")
+    src = report["source"]
+    print(f"code: commit {src.get('commit')}, uncommitted changes to tracked files: {src.get('modified')}")
+    check("run is of a committed state (benchmark.py's git record)", src.get("commit") is not None and src.get("modified") is False)
 
     print("C1 complete setup, 101 frequencies, 193 design variables, double precision")
     check("101 frequencies", a["frequencies"].shape == (101,) and report["inputs"]["frequency_count"] == 101,
