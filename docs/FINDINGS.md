@@ -142,6 +142,36 @@ Gradient caveat: `jnp.real` drops the imaginary cotangent, which is correct only
   The duplication comes from the helpers being **inlined into 5 different bodies** (surface in carrier and signal, force L/R,
   optomechanical phase L/R) and expanded as complex math. Remaining `vmap(lax.switch)`: only parameter linking (1 linked parameter), small.
 
+### 1.9 Real-valued component maths: branch `trig-opt` (measured)
+Follow-up to §1.8. All runs: laptop (Ryzen AI 7 350), 1 CPU, 101 freqs, fresh processes, variants run back to back.
+Tool: `scripts/compile_report.py` (new on `trig-opt`).
+
+| Variant | commit | forward ops | forward compile | total compile (2 runs) | outputs vs `main` |
+|---|---|---:|---:|---:|---|
+| A `main` | `db091f3` | 3,387 | 18.8 / 16.6 s | 26.5 / 23.7 s | — |
+| B real trig in `incidence_angle_left/right` | `e10a357` | 2,274 | 12.7 / 13.6 s | 19.8 / 20.9 s | bit-identical |
+| C + `cos(arcsin x)` → `sqrt(1−x²)` | `ca9349c` | 2,274 | 13.5 / 12.2 s | 21.2 / 19.2 s | bit-identical; **no gain over B** (XLA already simplified it in real arithmetic) |
+| **D + all component inputs cast to real** (`assembly.component_outputs`) | `acf1e94` | **2,186** | **9.3 / 9.2 s** | **16.6 / 16.0 s** | sensitivity 3e-10, gradient 1.6e-10, signal 1.2e-7 rel |
+| E + `standardize_output` via `jnp.stack` (not kept) | — | 2,194 | 11.8 / 9.7 s | 19.9 / 17.0 s | bit-identical to D; **no gain** |
+
+**Official `benchmark.py --cpus 1 --repeats 3`, back to back:** `main` 28.22 / 27.37 s vs **D 20.23 / 19.36 s → −8.0 s (1.40×)**, all PASS.
+
+- **Why D works:** the parameter vector is complex128, so every `sin/cos/exp/sqrt` on a physical parameter (phases, `space_modulation`, reflectivity
+  square roots, …) compiled as complex maths. Casting the gathered inputs once with `jnp.real` makes all of them real. Precondition
+  in `assembly.assembly_arrays`: base parameters and sweep values must have zero imaginary part (true for the fixture, aLIGO and Voyager), otherwise the
+  plan is dropped and the original path runs. Dropping the imaginary cotangent is exact for real parameters.
+- **D is not bit-identical** because real vs complex `exp`/`sqrt` round the last bit differently; cond(A) ≈ 1e30 amplifies that to 1.2e-7 in
+  the signal. Against the original code (`bench.py check --fd`) D has the **same errors as `main`**: `|Δln S|` 1.689e-8 vs 1.684e-8, gradients 2.023e-5
+  for both, reference 3.761e-6 (limit 1e-5). Tests: `test_adjoint` 5/5, `test_assembly` ALL PASS (aLIGO, Voyager, cavity bitwise with/without plan).
+- **Option 4 (precompute the incidence angles at build time): not pursued.** After D the two helpers are ~130 of 2,111 forward ops (~6 %,
+  ≤ ~0.5 s) and it would change component signatures.
+- What is left in D's forward program: outside `differometor` (readout, JAX internals) 22 %, `standardize_output` 10 %, `simulate` glue 8 %,
+  `assembly.component_outputs` 7 %, then `incidence_angle_right`, `phase_shift`, `expand_parameters`, `surface` (~4–5 % each).
+- **Deadlock check:** one `compile_report` run on this machine hung (all threads in `futex_wait`, CPU idle) while memory was tight (5 of 7 GB
+  used by other sessions). It did not reproduce in 3 further `compile_report` runs or **5 back-to-back `benchmark.py --cpus 1` runs** under a
+  faulthandler watchdog (all completed, 19.0–21.7 s, validation PASS). Possibly the same family as `f5ea168`'s fix, possibly memory pressure:
+  **watch for it on the cluster**, and re-arm `faulthandler.dump_traceback_later` if a run hangs.
+
 ## 2. Correction to my earlier notes
 - Noise matrix `Q`: **66 component-function calls producing 272 non-zeros** (the plan's number is right;
   I had written "66 non-zeros").
@@ -168,3 +198,4 @@ limit. `bench.py check` fails a candidate whose sensitivity drifts > 5e-6 (in ln
 | 2026-11-21 | `ws3` (not kept) | WS3(b) experiment: assembly plan passed as a leafless pytree (`StaticPlan`, FINDINGS §1.1) so all plan indices are compile-time constants | EPYC 7763, 101 | 41.05 | 20.13 | 21.30 | PASS (identical to WS3(a)) | **no gain** vs WS3(a) (compile 20.06 → 20.13 s): §1.1's 6 s came from constant indices in the 19-branch `switch` graph, which WS3(a) already removed. Reverted to keep the code simple |
 | 2026-11-21 | `main` @ `f5ea168` | **official `benchmark.py --cpus 1 --repeats 3`, 101 freqs** (WS1+WS2+WS3+WS4 merged) | Ryzen AI 7 350 laptop, 1 CPU | **28.82** vs 44.20 (organisers' Xeon) | 25.97 (fwd 18.21+1.78, grad 5.05+0.33) | **0.37** vs 17.68 | **PASS** (max \|Δln S\| 5.374e-6, FD check passed) | forward run 13.29 → 0.31 s, gradient run 4.34 → 0.22 s; setup 2.32 s; peak RSS 0.89 GB (vs ~14.4 GB); compile is now **90 %** of the total. Same commit **without** `--cpus` (16 CPUs): 15.96 s, compile 10.96 s (not comparable: jury pins 1 CPU). Laptop compiles ~2× slower than the Xeon, so the Xeon total should be lower (not measured). |
 | 2026-11-21 | `main` + noise-once fix | `adjoint.pattern_arrays`: ignore one-value (dummy) sweeps, so Q is built once (WS2_CHANGELOG step 3) | Ryzen laptop, 1 CPU, 101 | 31.58 / 33.78 vs 33.28 / 35.45 (interleaved A/B, before fix) | – | ~0.43 | PASS | the machine was loaded during this A/B (imports and build also slower than in the 28.82 s run); compare only within the A/B pairs |
+| 2026-11-21 | `trig-opt` @ `acf1e94` | real-valued component inputs (+ real trig in incidence helpers); FINDINGS §1.9 | Ryzen laptop, 1 CPU, 101 | **20.23 / 19.36** vs 28.22 / 27.37 (`main`, interleaved) | 16.6 / 16.0 vs 26.5 / 23.7 (`compile_report`) | ~0.32 | PASS (`|Δln S|` 1.689e-8, grad 2.0e-5 vs 02ec741; same as main) | **−8.0 s, 1.40× vs main**; forward compile ~17.7 → 9.3 s; not bit-identical to main (sens 3e-10, grad 1.6e-10) |
