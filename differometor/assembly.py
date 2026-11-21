@@ -143,6 +143,12 @@ def assembly_arrays(simulation_arrays: dict) -> dict:
     if not ENABLED:
         return {}
     a = simulation_arrays
+    # [trig-opt] Precondition for the float64 component inputs in `component_outputs`: all base parameter
+    # values and swept values must be real. Optimised values are real by construction (float64 array);
+    # linked values come from LINKING_FUNCTIONS applied to real parameters (grid-length tying: identity).
+    for key in ("parameters", "carrier_changing_values", "signal_changing_values"):
+        if np.any(np.imag(np.asarray(a[key])) != 0):
+            return {}
     try:
         plan = {}
         for name, prefix in (("carrier", "carrier"), ("noise", "noise")):
@@ -191,8 +197,11 @@ def component_outputs(parameters: jnp.ndarray, groups: tuple) -> jnp.ndarray:
     groups     : tuple of len(FUNCTIONS) int arrays (K_t, I); empty types are skipped at trace time
     returns    : (K * OUTPUT_WIDTH,) complex, calls in grouped order
     """
+    # [trig-opt] Inputs are cast to float64 once here: every physical parameter is real (checked at build
+    # time in `assembly_arrays`), and complex128 inputs made XLA expand each sin/cos/exp/sqrt into long
+    # complex formulas. Values are unchanged; the cotangent of the (zero) imaginary part is dropped.
     parts = [
-        vmap(FUNCTIONS[function_type])(parameters[inputs])
+        vmap(FUNCTIONS[function_type])(jnp.real(parameters[inputs]))
         for function_type, inputs in enumerate(groups)
         if inputs.shape[0]
     ]
