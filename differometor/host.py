@@ -265,22 +265,40 @@ def _jacobian(function, inputs: np.ndarray, slots=None) -> np.ndarray:
 _USED_SLOTS = {}
 
 
+class _ReadRecorder(Dual):
+    """A Dual input that records every index the component function reads from it (`parameters[k]`)."""
+
+    __slots__ = ("reads",)
+
+    def __init__(self, v, d):
+        super().__init__(v, d)
+        self.reads = []
+
+    def __getitem__(self, index):
+        self.reads.append(index)
+        return Dual.__getitem__(self, index)
+
+
 def _used_slots(function_type: int, sample: np.ndarray) -> np.ndarray:
     """
     Input slots a component function reads (cached per type). Inputs are padded to 7 slots, most functions read 1-3.
 
-    Decided from the full Jacobian at a few real calls and at a perturbed copy of them: a slot counts as used if any
-    derivative w.r.t. it is non-zero or non-finite at any of these points (conservative: a slot is only dropped if
-    its derivative is exactly zero everywhere it was probed, i.e. the function does not read it).
+    Decided structurally, independent of any data: the function runs once on an input that records which indices
+    it reads. Every component function reads its inputs as `parameters[k]` with constant k (and has no data-dependent
+    Python branches: jnp.where evaluates both sides), so the recorded set is exactly the inputs it can depend on.
+    Any other kind of read (slice, array index, iteration) marks every slot as used. `sample` (I, n) only provides
+    shapes and finite values to run on.
     """
     if function_type not in _USED_SLOTS:
-        function = numpy_functions()[function_type]
-        probes = [sample, sample * (1 + 1e-3) + 1e-3]
-        used = np.zeros(sample.shape[0], dtype=bool)
-        for probe in probes:
-            jac = _jacobian(function, probe)
-            used |= np.any((jac != 0) | ~np.isfinite(jac), axis=(0, 1))
-        _USED_SLOTS[function_type] = np.flatnonzero(used)
+        count = sample.shape[0]
+        recorder = _ReadRecorder(sample, np.zeros((count,) + sample.shape, dtype=np.complex128))
+        numpy_functions()[function_type](recorder)
+        reads = recorder.reads
+        if all(isinstance(i, (int, np.integer)) and -count <= int(i) < count for i in reads):
+            used = sorted({int(i) % count for i in reads})
+        else:
+            used = list(range(count))
+        _USED_SLOTS[function_type] = np.asarray(used, dtype=np.int64)
     return _USED_SLOTS[function_type]
 
 

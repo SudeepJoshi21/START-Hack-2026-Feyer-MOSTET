@@ -14,3 +14,4 @@ examples/results/
 # local benchmark worktrees / results (scripts/bench.py)
 .bench/
 .gate/
+.fresh_outputs.npz
