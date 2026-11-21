@@ -25,6 +25,7 @@ from jax import lax, vmap, jit
 
 from differometor import adjoint
 from differometor import assembly as _assembly
+from differometor import host as _host
 from differometor.setups import Setup
 from differometor.build import build, pairs_to_arrays, prepare_arrays, LINKING_FUNCTIONS
 from differometor.components import FUNCTIONS, UNIT_VACUUM, H_PLANCK, F0
@@ -219,6 +220,9 @@ def simulate(
     noise_parameter_rows: jnp.ndarray | None = None,
     # [WS3] build-time assembly plan (assembly.assembly_arrays). None => original `vmap(lax.switch)` assembly.
     assembly: dict | None = None,
+    # [host-native] static plan (host.host_plan). When given, the whole simulation runs as NumPy/SciPy host code
+    # behind one custom_vjp (two callbacks, near-zero XLA compile). None => the JAX path below.
+    host_plan=None,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Run one full simulation pass: carrier, signal, and quantum noise.
@@ -301,6 +305,11 @@ def simulate(
     - Conjugation and block manipulation follow the conventions used for upper and lower
       sidebands in frequency-domain interferometer models.
     """
+    if host_plan is not None and _host.ENABLED:
+        return _host.simulate(
+            host_plan, optimized_parameters, parameters, carrier_changing_values, signal_changing_values
+        )
+
     # Insert optimized parameter values into the base parameter row.
     parameters = parameters.at[[0], optimized_parameter_indices].set(
         optimized_parameters[optimized_value_indices]
@@ -601,6 +610,11 @@ def run_build_step(
             assembly_plan = {}
     if assembly_plan:
         simulation_arrays["assembly"] = assembly_plan
+
+    # [host-native] whole simulation on the host (NumPy/SciPy) when every precondition holds.
+    plan = _host.host_plan(simulation_arrays)
+    if plan is not None:
+        simulation_arrays["host_plan"] = plan
 
     if timeit:
         for array in simulation_arrays.values():

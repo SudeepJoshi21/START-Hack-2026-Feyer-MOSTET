@@ -78,6 +78,11 @@ from differometor.components import (
 # ---------------------------------------------------------------------
 
 LINKING_FUNCTIONS = []
+
+
+def identity_link(x):
+    """Linking function used when a setup has no linked parameters (recognised by `differometor.host`)."""
+    return x
 """
 Global registry of parameter-linking functions.
 
@@ -1486,7 +1491,7 @@ def build(setup: Setup):
     if len(linked_indices) == 0:
         linked_indices = [0]
         indices_to_link = [0]
-        LINKING_FUNCTIONS.append(lambda x: x)
+        LINKING_FUNCTIONS.append(identity_link)
         linking_function_indices = [0]
 
     return (
