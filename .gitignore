@@ -10,3 +10,6 @@ benchmark*.pdf
 benchmark*.svg
 *.npz
 examples/results/
+
+# local benchmark worktrees / results (scripts/bench.py)
+.bench/
