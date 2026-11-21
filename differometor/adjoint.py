@@ -212,6 +212,76 @@ per-frequency COLAMD (round-off level, 6e-8 relative on the raw solves; refineme
 """
 
 
+_BLAS_THREAD_CONTROLS = None
+
+
+def _blas_thread_controls():
+    """
+    (set, get) thread-count functions of the OpenBLAS builds loaded in this process (NumPy's and SciPy's wheels each
+    bundle one), found via /proc/self/maps and ctypes. Empty where that is not available (no Linux, other BLAS).
+    """
+    global _BLAS_THREAD_CONTROLS
+    if _BLAS_THREAD_CONTROLS is None:
+        controls = []
+        try:
+            import ctypes
+
+            _superlu()                       # loads SciPy's OpenBLAS (SuperLU's dense kernels)
+            import numpy.linalg              # noqa: F401  NumPy's OpenBLAS
+            with open("/proc/self/maps") as maps:
+                paths = sorted({line.split()[-1] for line in maps
+                                if "openblas" in line.lower() and line.split()[-1].startswith("/")})
+            names = [("scipy_openblas_set_num_threads64_", "scipy_openblas_get_num_threads64_"),
+                     ("scipy_openblas_set_num_threads", "scipy_openblas_get_num_threads"),
+                     ("openblas_set_num_threads64_", "openblas_get_num_threads64_"),
+                     ("openblas_set_num_threads", "openblas_get_num_threads")]
+            for path in paths:
+                library = ctypes.CDLL(path)
+                for setter, getter in names:
+                    if hasattr(library, setter) and hasattr(library, getter):
+                        controls.append((getattr(library, setter), getattr(library, getter)))
+                        break
+        except Exception:  # pragma: no cover - non-Linux or unusual BLAS: leave the thread count alone
+            controls = []
+        _BLAS_THREAD_CONTROLS = controls
+    return _BLAS_THREAD_CONTROLS
+
+
+class single_threaded_blas:
+    """
+    Run the host numerics with one BLAS thread, restoring the previous thread counts afterwards.
+
+    The host path calls BLAS only for tiny dense blocks (SuperLU's supernodes, the 286x286 carrier solve), where
+    threads never help. Without pinning, OpenBLAS starts one thread per *visible* CPU: on a 128-CPU node with 2 CPUs
+    allocated, start_here.py's simulation + gradient took 5-10 s instead of 0.5 s. benchmark.py --cpus 1 already sets
+    OPENBLAS_NUM_THREADS=1, so there this is a no-op. Same results (single-threaded is also what the benchmark runs).
+    """
+
+    def __enter__(self):
+        self.previous = [get() for _, get in _blas_thread_controls()]
+        for (set_threads, _), count in zip(_blas_thread_controls(), self.previous):
+            if count != 1:
+                set_threads(1)
+        return self
+
+    def __exit__(self, *exc):
+        for (set_threads, _), count in zip(_blas_thread_controls(), self.previous):
+            if count != 1:
+                set_threads(count)
+        return False
+
+
+def with_single_threaded_blas(function):
+    """Decorator for host callbacks: run `function` inside `single_threaded_blas()`."""
+
+    def wrapped(*args, **kwargs):
+        with single_threaded_blas():
+            return function(*args, **kwargs)
+
+    wrapped.__name__, wrapped.__doc__ = function.__name__, function.__doc__
+    return wrapped
+
+
 def _gstrf(n, data, indices, indptr, options):
     return _superlu().gstrf(
         n, data.shape[0], data, indices, indptr, csc_construct_func=_no_csc, ilu=False, options=options
@@ -359,6 +429,7 @@ def _callback(fn, out_like, vals, rows, cols, rhs1, rhs2):
     index = jnp.concatenate([rows.astype(jnp.int32), cols.astype(jnp.int32)])   # (2 nnz,) int32
     split1 = nnz + int(np.prod(shape1[1:]))
 
+    @with_single_threaded_blas
     def host(packed, index):
         packed, index = np.asarray(packed), np.asarray(index)
         return fn(

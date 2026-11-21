@@ -737,6 +737,7 @@ def _input_key(plan, packed_inputs: np.ndarray) -> tuple:
 def _call_forward(plan, optimized, parameters, carrier_values, signal_values):
     shapes = [optimized.shape, parameters.shape, carrier_values.shape, signal_values.shape]
 
+    @_adjoint.with_single_threaded_blas
     def host(packed):
         packed = np.asarray(packed)
         o, p, c, s = _unpack(packed, shapes)
@@ -770,6 +771,7 @@ def _simulate_bwd(plan, residuals, cotangents):
 
     input_size = sum(int(np.prod(shape)) for shape in in_shapes)
 
+    @_adjoint.with_single_threaded_blas
     def host(packed):
         packed = np.asarray(packed)
         o, p, c, s, cb, sb, nb = _unpack(packed, in_shapes + ct_shapes)
@@ -805,6 +807,7 @@ def simulate(plan, optimized_parameters, parameters, carrier_changing_values, si
 def _host_call(function, out_shape, *arrays):
     shapes = [a.shape for a in arrays]
 
+    @_adjoint.with_single_threaded_blas
     def run(packed):
         return function(*_unpack(np.asarray(packed), shapes))
 
