@@ -181,9 +181,36 @@ def _host_adjoint(vals, rows, cols, xbar, ubar):
     return lam_x, lam_u
 
 
-def _callback(fn, out_like, *args):
+def _callback(fn, out_like, vals, rows, cols, rhs1, rhs2):
+    """
+    Run `fn(vals, rows, cols, rhs1, rhs2)` on the host.
+
+    Deadlock guard (found at 101 frequencies with the benchmark's split forward/pullback programs and
+    the process pinned to one CPU): in JAX 0.9, `pure_callback` hands the callback `jax.Array`s, and
+    `np.asarray` on an operand that is (an alias of) an *input buffer of the running program* waits on
+    that program, which is waiting for the callback. So every operand is passed packed into freshly
+    computed buffers (`concatenate` always materialises a new buffer) and unpacked in NumPy.
+    """
     shapes = tuple(jax.ShapeDtypeStruct(a.shape, jnp.complex128) for a in out_like)
-    return jax.pure_callback(fn, shapes, *args, vmap_method="sequential")
+    frequencies, nnz = vals.shape
+    shape1, shape2 = rhs1.shape, rhs2.shape
+    packed = jnp.concatenate(
+        [vals, rhs1.reshape(frequencies, -1), rhs2.reshape(frequencies, -1)], axis=1
+    )                                                               # (F, nnz + |rhs1| + |rhs2|) complex
+    index = jnp.concatenate([rows.astype(jnp.int32), cols.astype(jnp.int32)])   # (2 nnz,) int32
+    split1 = nnz + int(np.prod(shape1[1:]))
+
+    def host(packed, index):
+        packed, index = np.asarray(packed), np.asarray(index)
+        return fn(
+            packed[:, :nnz],
+            index[:nnz],
+            index[nnz:],
+            packed[:, nnz:split1].reshape(shape1),
+            packed[:, split1:].reshape(shape2),
+        )
+
+    return jax.pure_callback(host, shapes, packed, index, vmap_method="sequential")
 
 
 def _sparse_forward(vals, rows, cols, b, C):
