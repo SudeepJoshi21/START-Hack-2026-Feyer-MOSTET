@@ -63,8 +63,11 @@ Iterative refinement of the SuperLU solves: True = adjoint.REFINEMENT_STEPS step
 Signal solve: "extended". On Voyager in frequency-modulation mode the detected sidebands are tiny next to other
 components of x (cond(A) 5.7e11), and a float64 residual cannot resolve them: sensitivity 1.1e-2 off the
 extended-precision reference (original dense code: 3.7e-1 off); with 2 extended steps 8.6e-6 (floor of a float64
-read-out of the exact solution: 6.1e-6). Benchmark workload: 6e-10 either way. Cost ~25 ms per forward pass.
-Set to True for the float64-only variant (~25 ms faster, judged workload unaffected).
+read-out of the exact solution: 6.1e-6). Benchmark workload: 6e-10 either way. Cost: 55-75 ms per forward pass
+(first call in a fresh process: one more batch of solves + longdouble residual products); interleaved official
+benchmark on a loaded node +0.05..0.26 s. An adaptive switch was tried: a float64 componentwise error estimate flags
+every frequency of every setup (structurally tiny components), so only the read-out could tell; not adopted.
+Set to True for the float64-only variant (~60 ms faster; the judged workload passes either way, 5.374e-6).
 
 Noise weights and adjoint: one float64 step each.
 
