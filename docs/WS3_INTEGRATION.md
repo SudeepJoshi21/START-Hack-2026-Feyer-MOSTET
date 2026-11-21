@@ -46,8 +46,25 @@ Preconditions, checked at build time (otherwise the original path is used):
 | Gradient of mean log sensitivity | 3.6e-7 max rel |
 | aLIGO frequency sweep, aLIGO squeezer-db sweep, voyager frequency sweep, cavity with a **carrier** (tuning) sweep, via `df.run` | **bitwise equal** (plan used in all four) |
 
-`bench.py check --freqs 101` and `bench.py parts --parts pipeline --trials 3 --freqs 101`: see §5. Numbers are logged in
-[`FINDINGS.md`](FINDINGS.md) §4.
+`bench.py check --freqs 101`: **PASS**.
+- Sensitivity vs reference: 5.374e-6, the same as the baseline.
+- Carrier and powers are identical to the baseline.
+- Signal differs by 9.6e-8 and noise by 2.4e-8.
+- Across all 193 gradients the worst relative error is 2.9e-6, with cosine similarity 1.0.
+
+Speed: `bench.py parts --parts pipeline --trials 3 --repeats 1 --freqs 101`, EPYC 7763, 1 CPU:
+
+| | Baseline `02ec741` | `ws3` | Speedup |
+|---|---:|---:|---:|
+| **First-run total (scored)** | 64.90 s | **41.41 s** | **1.57×** |
+| Compile total | 38.83 s | 20.06 s | 1.94× |
+| forward compile / gradient compile | 24.7 / 10.0 s | 13.2 / 3.9 s | 1.87× / 2.55× |
+| forward run | 19.5 s | 16.7 s | 1.17× (still the dense LU solves) |
+| gradient run | 4.6 s | 2.4 s | 1.90× |
+| peak RSS | 14.7 GB | 10.5 GB | 1.41× |
+
+For comparison, `ws1` alone measured 44.68 s. WS1 speeds up the run (forward run 4.9 s), WS3 the compile (20 s), so
+they are complementary.
 
 ## 3. Integration: the target `simulate`
 
@@ -98,22 +115,25 @@ Start from `main`. Merge in this order; each step must pass `bench.py check --fr
    - `bench.py parts --parts pipeline --trials 3 --freqs 101`;
    - `python benchmark.py --cpus 1 --repeats 3` (the gate).
 
-## 5. Measured results and what remains
+## 5. What remains
 
-See the WS3 rows in [`FINDINGS.md`](FINDINGS.md) §4.
-
-**After the integration (estimate):**
+**After the integration (estimate, not measured):**
+- Compile is about WS3's 20 s or less: the dense LU and its AD are gone.
+- Forward and gradient runs are about WS1/WS2's sparse numbers (a few seconds) minus the dense matrix traffic.
+- So the first-run total is roughly 20–28 s, against 64.9 s for the baseline.
 - **No dense (F, 751, 751) arrays anywhere.** The tape becomes `values`, `x`, `W` and the grouped outputs, all ≤ (101, 2,668)
   complex. Peak memory should fall from 9.5–14.7 GB to well under 1 GB, and the forward and gradient run times should fall
   to roughly the cost of SuperLU plus the elementwise component functions.
 - **Compile becomes nearly all of the score.**
 
-**Next levers for compile:**
-1. **Static structure** (FINDINGS §1.1, measured 20.4 → 14.2 s): pass the plan's index arrays as a pytree node with no
-   leaves (hashable `aux_data`), so XLA sees constant gathers. The plan is already isolated in one dict, so this is a
-   local change in `assembly.assembly_arrays`.
-2. **Evaluate frequency-independent calls once.** Calls whose inputs include no swept parameter can run on one parameter
+**Already tried, no gain:** passing the plan as compile-time constants (a leafless pytree, FINDINGS §1.1). Compile
+stayed at 20.1 s, because §1.1's 6 s came from the 19-branch `switch` graph, which WS3 removes. Don't redo it.
+
+**Next levers for compile** (re-profile the integrated graph first; the dense solves and their AD are gone there):
+1. **Evaluate frequency-independent calls once.** Calls whose inputs include no swept parameter can run on one parameter
    row and be broadcast. The plan measured 1,531 of the 2,537 matrix entries as frequency-independent; `surface` and
    `force_calculation_*` are likely examples. Put these calls in a second group per type, but only if it doesn't double
    the traced function bodies; measure compile.
-3. **XLA `--xla_backend_optimization_level=0`** (FINDINGS §1.7): ask the organisers first.
+2. **XLA `--xla_backend_optimization_level=0`** (FINDINGS §1.7): ask the organisers first.
+3. **Plan B:** one `custom_vjp` around all of `simulate` (see `OPTIMIZATION_PLAN.md` §6), if compile still dominates after
+   the integration.
