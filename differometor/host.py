@@ -55,9 +55,18 @@ Set to True before building to keep them, e.g. to compare the host path with the
 NOISE_FACTOR = UNIT_VACUUM * H_PLANCK * F0 * 0.25
 """noise = sqrt(2 * S * NOISE_FACTOR), exactly as in `simulate`."""
 
-REFINE = {"signal": True, "weights": True, "adjoint": True}
+REFINE = {"signal": "extended", "weights": True, "adjoint": True}
 """
-Which SuperLU solves get one step of iterative refinement (adjoint.REFINEMENT_STEPS). All of them.
+Iterative refinement of the SuperLU solves: True = adjoint.REFINEMENT_STEPS step(s) with a float64 residual,
+"extended" = adjoint.EXTENDED_REFINEMENT_STEPS steps of mixed-precision refinement (residual in np.longdouble).
+
+Signal solve: "extended". On Voyager in frequency-modulation mode the detected sidebands are tiny next to other
+components of x (cond(A) 5.7e11), and a float64 residual cannot resolve them: sensitivity 1.1e-2 off the
+extended-precision reference (original dense code: 3.7e-1 off); with 2 extended steps 8.6e-6 (floor of a float64
+read-out of the exact solution: 6.1e-6). Benchmark workload: 6e-10 either way. Cost ~25 ms per forward pass.
+Set to True for the float64-only variant (~25 ms faster, judged workload unaffected).
+
+Noise weights and adjoint: one float64 step each.
 
 Measured against dense LU: the noise weights (A^H) need it on Voyager (3.6e-3 without), the adjoint solves too
 (Voyager gradient 1.1e-4 without, 4e-13 with). The signal solve was briefly left unrefined (benchmark workload 4.8e-8

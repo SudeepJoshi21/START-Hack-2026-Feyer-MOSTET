@@ -10,7 +10,10 @@ forward with AD residuals (jax.vjp), a jitted sensitivity read-out with its pull
 pass, each lowered and compiled on its own; then a host transfer. The reported total includes `import jax` and
 `import differometor`, the build (`run_build_step`), all lowering/compilation and all execution.
 
-`check` compares carrier, signal, noise, sensitivity (or powers) and the gradient with the original code path in
+`check` applies the judging criteria to every scenario: finite outputs, non-zero gradient, positive sensitivities
+within 1e-5 (ln) of a high-accuracy reference ("truth": every solve with 6 steps of mixed-precision refinement,
+validated against dense LAPACK solves refined in np.longdouble), gradient within 1e-4 of it; it also compares
+carrier, signal, noise, sensitivity (or powers) and the gradient with the original code path in
 the same tree (host path, WS2 adjoint and WS3 assembly switched off: dense XLA LU and JAX autodiff, i.e. the
 reference numerics), in one process per scenario.
 """
@@ -27,6 +30,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PROPERTIES = ["reflectivity", "tuning", "db", "angle", "power", "mass", "length"]
 OPTIMIZED = ["reflectivity", "tuning", "db", "angle", "power", "mass", "length", "phase"]
 NO_REFERENCE = {"uifo800-400f": "the original dense code path needs > 48 GB at 400 frequencies"}
+CHUNKS = 4   # such references are computed in CHUNKS equal frequency chunks
 
 
 # ---------------------------------------------------------------------------------------
@@ -144,7 +148,7 @@ def _readout(jnp, df, outputs, ports, reference):
     return jnp.mean(jnp.log10(sensitivity / reference)), (sensitivity, df.power_detector(carrier))
 
 
-def run_one(name, reference_path=False):
+def run_one(name, reference_path=False, chunk=None, accurate=False):
     start = time.perf_counter()
     import numpy as np
     import jax
@@ -155,6 +159,10 @@ def run_one(name, reference_path=False):
     if reference_path:                                       # original numerics: no host path, no WS2/WS3
         from differometor import adjoint, assembly, host
         host.ENABLED = adjoint.ENABLED = assembly.ENABLED = False
+    if accurate:                                             # high-accuracy reference: every solve mixed-precision refined
+        from differometor import adjoint, host
+        host.REFINE.update(signal="extended", weights="extended", adjoint="extended")
+        adjoint.EXTENDED_REFINEMENT_STEPS = 6
     jax.config.update("jax_enable_compilation_cache", False)
     jax.devices("cpu")
     stages = {}
@@ -168,6 +176,9 @@ def run_one(name, reference_path=False):
 
     def build():
         setup, changing, values, pairs, initial, reference = _scenarios()[name][1]()
+        if chunk is not None:                                # (k, m): k-th of m equal parts of the sweep
+            values = np.array_split(np.asarray(values), chunk[1], axis=-1)[chunk[0]]
+            reference = None if reference is None else np.array_split(np.asarray(reference), chunk[1])[chunk[0]]
         arrays, ports, *_ = df.run_build_step(setup, changing, jnp.asarray(values, dtype=jnp.float64), pairs)
         arrays = dict(arrays)
         if initial is None:
@@ -220,13 +231,13 @@ def run_one(name, reference_path=False):
 # Drivers
 # ---------------------------------------------------------------------------------------
 
-def _child(name, mode, out):
+def _child(name, mode, out, chunk=None):
     env = dict(os.environ, JAX_PLATFORMS="cpu", JAX_ENABLE_X64="true")
     for k in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
         env[k] = "1"
     cpu = sorted(os.sched_getaffinity(0))[:1]
     code = (f"import os,sys; os.sched_setaffinity(0, {cpu}); sys.path.insert(0, {str(ROOT)!r}); "
-            f"sys.path.insert(0, {str(ROOT / 'scripts')!r}); import scenarios; scenarios._emit({name!r}, {mode!r}, {out!r})")
+            f"sys.path.insert(0, {str(ROOT / 'scripts')!r}); import scenarios; scenarios._emit({name!r}, {mode!r}, {out!r}, {chunk!r})")
     proc = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
     if proc.returncode:
         return {"name": name, "error": proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else f"exit {proc.returncode}"}
@@ -236,10 +247,10 @@ def _child(name, mode, out):
     return meta
 
 
-def _emit(name, mode, out):
+def _emit(name, mode, out, chunk=None):
     import numpy as np
 
-    result = run_one(name, reference_path=(mode == "reference"))
+    result = run_one(name, reference_path=(mode == "reference"), chunk=chunk, accurate=(mode == "accurate"))
     np.savez(out + ".npz", **result.pop("arrays"))
     Path(out + ".json").write_text(json.dumps(result))
 
@@ -299,18 +310,60 @@ def main(argv):
             print(f"across scenarios: mean {statistics.mean(medians):.3f} s, std {statistics.stdev(medians):.3f} s, "
                   f"min {min(medians):.3f}, max {max(medians):.3f}")
     elif command == "check":
+        import numpy as np
+
+        failed = []
         for name in names:
-            if name in NO_REFERENCE:
-                print(f"{name:26s} reference skipped: {NO_REFERENCE[name]}", flush=True)
-                continue
             new = _child(name, "time", f"{tmp}/{name}-new")
-            ref = _child(name, "reference", f"{tmp}/{name}-ref")
-            if "error" in new or "error" in ref:
-                print(f"{name:26s} ERROR new={new.get('error')} reference={ref.get('error')}", flush=True)
+            if name in NO_REFERENCE:     # original path in equal frequency chunks (memory); frequencies are independent
+                parts = [_child(name, "reference", f"{tmp}/{name}-ref{k}", (k, CHUNKS)) for k in range(CHUNKS)]
+                errors = [p["error"] for p in parts if "error" in p]
+                ref = {"error": errors[0]} if errors else {
+                    "total": sum(p["total"] for p in parts),
+                    "arrays": {
+                        "carrier": parts[0]["arrays"]["carrier"], "powers": parts[0]["arrays"]["powers"],
+                        "signal": np.concatenate([p["arrays"]["signal"] for p in parts], axis=-1),
+                        "noise": np.concatenate([p["arrays"]["noise"] for p in parts], axis=-1),
+                        "readout": np.concatenate([p["arrays"]["readout"] for p in parts], axis=-1),
+                        # loss = mean over all frequencies = mean of the equal-size chunk means
+                        "gradient": np.mean([p["arrays"]["gradient"] for p in parts], axis=0),
+                    }}
+            else:
+                ref = _child(name, "reference", f"{tmp}/{name}-ref")
+            acc = _child(name, "accurate", f"{tmp}/{name}-acc")
+            if "error" in new or "error" in ref or "error" in acc:
+                print(f"{name:26s} ERROR new={new.get('error')} original={ref.get('error')} accurate={acc.get('error')}", flush=True)
+                failed.append(name)
                 continue
-            diffs = {k: _rel(new["arrays"][k], ref["arrays"][k]) for k in new["arrays"]}
-            print(f"{name:26s} host={new['host_path']} | " + " ".join(f"{k} {v:.1e}" for k, v in diffs.items())
-                  + f" | time new {new['total']:.2f} s vs original path {ref['total']:.2f} s", flush=True)
+            a, r, t = new["arrays"], ref["arrays"], acc["arrays"]
+            diffs = {k: _rel(a[k], r[k]) for k in a}
+            # judging-criteria.pdf, applied to every scenario. "Truth" = high-accuracy reference (all solves with
+            # 6 steps of mixed-precision refinement); the original code path is compared as well.
+            criteria = {
+                "finite": all(np.isfinite(v).all() for v in a.values()) and np.isfinite(new["loss"]),
+                "gradient!=0": bool(np.any(a["gradient"] != 0)),
+            }
+            info = ""
+            if a["noise"].size:                                    # sensitivity read-out
+                criteria["S>0"] = bool(np.all(a["readout"] > 0))
+                dln = float(np.max(np.abs(np.log(a["readout"]) - np.log(t["readout"]))))
+                criteria[f"|dlnS| vs truth {dln:.1e}<=1e-5"] = dln <= 1e-5
+                dln_orig = float(np.max(np.abs(np.log(r["readout"]) - np.log(t["readout"]))))
+                dln_vs_orig = float(np.max(np.abs(np.log(a["readout"]) - np.log(r["readout"]))))
+                info = f" | original vs truth {dln_orig:.1e}, ours vs original {dln_vs_orig:.1e}"
+            else:                                                  # power read-out (no noise detectors)
+                criteria[f"powers vs original {diffs['powers']:.1e}"] = diffs["powers"] <= 1e-9
+            g_truth = _rel(a["gradient"], t["gradient"])
+            criteria[f"gradient vs truth {g_truth:.1e}<=1e-4"] = g_truth <= 1e-4
+            info += f" | gradient: original vs truth {_rel(r['gradient'], t['gradient']):.1e}"
+            ok = all(criteria.values())
+            if not ok:
+                failed.append(name)
+            print(f"{name:24s} {'PASS' if ok else 'FAIL'} host={new['host_path']} | "
+                  + " ".join(f"{k}:{'ok' if v else 'NO'}" for k, v in criteria.items()) + info
+                  + " | ours vs original " + " ".join(f"{k} {v:.1e}" for k, v in diffs.items())
+                  + f" | time {new['total']:.2f} s vs original path {ref['total']:.2f} s", flush=True)
+        print("RESULT:", "ALL SCENARIOS PASS" if not failed else f"FAILED: {failed}")
     else:
         raise SystemExit(__doc__)
 

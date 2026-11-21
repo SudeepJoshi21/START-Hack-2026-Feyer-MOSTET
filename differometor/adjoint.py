@@ -163,6 +163,9 @@ Without it the SuperLU noise weights of Voyager (an example setup, not scored) d
 Cost: one sparse product + one triangular solve per frequency.
 """
 
+EXTENDED_REFINEMENT_STEPS = 2
+"""Steps of mixed-precision refinement (residual in np.longdouble) for solves called with refine="extended"."""
+
 
 _SUPERLU = None
 
@@ -241,7 +244,7 @@ class Factorisations:
         self.rows, self.columns = indices, np.repeat(np.arange(n), np.diff(indptr))
         indices, indptr = indices.astype(np.intc), indptr.astype(np.intc)
         self.factors = [_gstrf(n, self.data[f], indices, indptr, options) for f in range(vals.shape[0])]
-        self._index = {}
+        self._index, self._padded = {}, {}
 
     def __len__(self):
         return len(self.factors)
@@ -266,14 +269,48 @@ class Factorisations:
     def _solve(self, rhs, trans):
         return np.stack([lu.solve(rhs[f], trans=trans) for f, lu in enumerate(self.factors)])
 
+    def _apply_extended(self, x, trans):
+        """op(A_f) x[f] in extended precision (np.clongdouble); x (F, n, k) clongdouble. Products sorted by output row."""
+        if trans == "H":
+            return np.conj(self._apply_extended(np.conj(x), "T"))
+        if trans not in self._padded:
+            source, target = (self.columns, self.rows) if trans == "N" else (self.rows, self.columns)
+            order = np.argsort(target, kind="stable")
+            counts = np.bincount(target, minlength=self.n)
+            starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
+            # reduceat needs a non-empty segment per row; an empty row (never in a non-singular system) gets a 0 term
+            empty = np.flatnonzero(counts == 0)
+            data = self.data[:, order].astype(np.clongdouble)
+            sources = source[order]
+            if empty.size:
+                insert = starts[empty]
+                data = np.insert(data, insert, 0, axis=1)
+                sources = np.insert(sources, insert, 0)
+                starts = np.concatenate([[0], np.cumsum(np.maximum(counts, 1))[:-1]])
+            self._padded[trans] = (data, sources, starts)
+        data, sources, starts = self._padded[trans]
+        return np.add.reduceat(data[:, :, None] * x[:, sources, :], starts, axis=1)
+
     def solve(self, rhs, trans, refine=True):
-        """op(A_f)^-1 rhs[f] for every frequency f; rhs (F, n) or (F, n, k)."""
+        """
+        op(A_f)^-1 rhs[f] for every frequency f; rhs (F, n) or (F, n, k).
+
+        refine: False, True (REFINEMENT_STEPS steps, residual in float64) or "extended" (EXTENDED_REFINEMENT_STEPS
+        steps of mixed-precision refinement: residual and accumulated solution in np.longdouble, corrections from
+        the float64 factorisation).
+        """
         shape = rhs.shape
         rhs = np.asarray(rhs, dtype=np.complex128).reshape(shape[0], shape[1], -1)
         if self.perm is not None:
             rhs = rhs[:, self.perm]
         x = self._solve(rhs, trans)
-        for _ in range(REFINEMENT_STEPS if refine else 0):
+        if refine == "extended":
+            x_ext, rhs_ext = x.astype(np.clongdouble), rhs.astype(np.clongdouble)
+            for _ in range(EXTENDED_REFINEMENT_STEPS):
+                residual = (rhs_ext - self._apply_extended(x_ext, trans)).astype(np.complex128)
+                x_ext = x_ext + self._solve(residual, trans)
+            x = x_ext.astype(np.complex128)
+        for _ in range(REFINEMENT_STEPS if refine is True else 0):
             x = x + self._solve(rhs - self._apply(x, trans), trans)
         if self.perm is not None:
             unpermuted = np.empty_like(x)
