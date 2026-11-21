@@ -1,0 +1,99 @@
+round 1 uifo800-benchmark          total 0.939 s | imports 0.371 build 0.124 compile 0.128 run 0.317 (fwd 0.180 grad 0.135) | host=True N=751 F=101 vars=193 finite=True grad!=0=True
+round 1 uifo800-perturbed-1pct     total 0.934 s | imports 0.357 build 0.109 compile 0.124 run 0.343 (fwd 0.208 grad 0.133) | host=True N=751 F=101 vars=193 finite=True grad!=0=True
+round 1 uifo800-perturbed-10pct    total 0.905 s | imports 0.338 build 0.099 compile 0.129 run 0.340 (fwd 0.191 grad 0.147) | host=True N=751 F=101 vars=193 finite=True grad!=0=True
+round 1 uifo800-20f                total 0.648 s | imports 0.336 build 0.099 compile 0.130 run 0.082 (fwd 0.048 grad 0.033) | host=True N=751 F=20 vars=193 finite=True grad!=0=True
+round 1 uifo800-400f               total 1.730 s | imports 0.336 build 0.105 compile 0.126 run 1.163 (fwd 0.687 grad 0.471) | host=True N=751 F=400 vars=193 finite=True grad!=0=True
+round 1 uifo800-wideband           total 0.970 s | imports 0.398 build 0.109 compile 0.136 run 0.327 (fwd 0.191 grad 0.130) | host=True N=751 F=101 vars=193 finite=True grad!=0=True
+round 1 uifo20-5000                total 1.004 s | imports 0.369 build 0.126 compile 0.139 run 0.370 (fwd 0.230 grad 0.138) | host=True N=769 F=101 vars=192 finite=True grad!=0=True
+round 1 uifo-random3               total 0.943 s | imports 0.336 build 0.110 compile 0.143 run 0.353 (fwd 0.169 grad 0.182) | host=True N=767 F=101 vars=251 finite=True grad!=0=True
+round 1 uifo-random3-ampl          total 0.831 s | imports 0.326 build 0.093 compile 0.146 run 0.266 (fwd 0.147 grad 0.116) | host=True N=701 F=101 vars=251 finite=True grad!=0=True
+round 1 uifo-random3-freqmod       total 0.857 s | imports 0.360 build 0.089 compile 0.138 run 0.270 (fwd 0.154 grad 0.114) | host=True N=701 F=101 vars=251 finite=True grad!=0=True
+round 1 voyager                    total 0.673 s | imports 0.410 build 0.037 compile 0.144 run 0.082 (fwd 0.044 grad 0.036) | host=True N=161 F=101 vars=48 finite=True grad!=0=True
+round 1 voyager-ampl               total 0.657 s | imports 0.356 build 0.057 compile 0.148 run 0.096 (fwd 0.058 grad 0.035) | host=True N=156 F=101 vars=48 finite=True grad!=0=True
+round 1 voyager-freqmod            total 0.624 s | imports 0.326 build 0.042 compile 0.161 run 0.095 (fwd 0.042 grad 0.051) | host=True N=156 F=101 vars=48 finite=True grad!=0=True
+round 1 aligo-ampl                 total 0.552 s | imports 0.327 build 0.039 compile 0.131 run 0.055 (fwd 0.027 grad 0.027) | host=True N=81 F=101 vars=30 finite=True grad!=0=True
+round 1 aligo                      total 0.653 s | imports 0.396 build 0.042 compile 0.148 run 0.067 (fwd 0.041 grad 0.025) | host=True N=82 F=101 vars=30 finite=True grad!=0=True
+round 1 cavity-tuning              total 0.617 s | imports 0.420 build 0.031 compile 0.096 run 0.071 (fwd 0.044 grad 0.026) | host=True N=21 F=0 vars=3 finite=True grad!=0=True
+round 2 uifo800-benchmark          total 1.125 s | imports 0.484 build 0.111 compile 0.153 run 0.377 (fwd 0.221 grad 0.155) | host=True N=751 F=101 vars=193 finite=True grad!=0=True
+round 2 uifo800-perturbed-1pct     total 1.162 s | imports 0.510 build 0.111 compile 0.157 run 0.384 (fwd 0.222 grad 0.160) | host=True N=751 F=101 vars=193 finite=True grad!=0=True
+round 2 uifo800-perturbed-10pct    total 1.134 s | imports 0.430 build 0.181 compile 0.166 run 0.356 (fwd 0.204 grad 0.150) | host=True N=751 F=101 vars=193 finite=True grad!=0=True
+round 2 uifo800-20f                total 0.784 s | imports 0.381 build 0.110 compile 0.174 run 0.119 (fwd 0.048 grad 0.070) | host=True N=751 F=20 vars=193 finite=True grad!=0=True
+round 2 uifo800-400f               total 2.053 s | imports 0.376 build 0.136 compile 0.143 run 1.397 (fwd 0.820 grad 0.573) | host=True N=751 F=400 vars=193 finite=True grad!=0=True
+round 2 uifo800-wideband           total 1.002 s | imports 0.392 build 0.114 compile 0.129 run 0.368 (fwd 0.197 grad 0.169) | host=True N=751 F=101 vars=193 finite=True grad!=0=True
+round 2 uifo20-5000                total 0.981 s | imports 0.380 build 0.103 compile 0.144 run 0.354 (fwd 0.199 grad 0.153) | host=True N=769 F=101 vars=192 finite=True grad!=0=True
+round 2 uifo-random3               total 1.008 s | imports 0.365 build 0.120 compile 0.158 run 0.366 (fwd 0.211 grad 0.153) | host=True N=767 F=101 vars=251 finite=True grad!=0=True
+round 2 uifo-random3-ampl          total 0.950 s | imports 0.378 build 0.107 compile 0.170 run 0.295 (fwd 0.167 grad 0.126) | host=True N=701 F=101 vars=251 finite=True grad!=0=True
+round 2 uifo-random3-freqmod       total 0.924 s | imports 0.359 build 0.094 compile 0.172 run 0.299 (fwd 0.168 grad 0.129) | host=True N=701 F=101 vars=251 finite=True grad!=0=True
+round 2 voyager                    total 0.737 s | imports 0.363 build 0.049 compile 0.187 run 0.138 (fwd 0.067 grad 0.069) | host=True N=161 F=101 vars=48 finite=True grad!=0=True
+round 2 voyager-ampl               total 0.638 s | imports 0.346 build 0.041 compile 0.148 run 0.102 (fwd 0.052 grad 0.049) | host=True N=156 F=101 vars=48 finite=True grad!=0=True
+round 2 voyager-freqmod            total 0.703 s | imports 0.402 build 0.041 compile 0.157 run 0.103 (fwd 0.050 grad 0.050) | host=True N=156 F=101 vars=48 finite=True grad!=0=True
+round 2 aligo-ampl                 total 0.651 s | imports 0.399 build 0.039 compile 0.152 run 0.061 (fwd 0.031 grad 0.027) | host=True N=81 F=101 vars=30 finite=True grad!=0=True
+round 2 aligo                      total 0.642 s | imports 0.368 build 0.046 compile 0.146 run 0.082 (fwd 0.045 grad 0.030) | host=True N=82 F=101 vars=30 finite=True grad!=0=True
+round 2 cavity-tuning              total 0.661 s | imports 0.442 build 0.045 compile 0.106 run 0.068 (fwd 0.045 grad 0.023) | host=True N=21 F=0 vars=3 finite=True grad!=0=True
+round 3 uifo800-benchmark          total 1.089 s | imports 0.383 build 0.143 compile 0.164 run 0.399 (fwd 0.240 grad 0.157) | host=True N=751 F=101 vars=193 finite=True grad!=0=True
+round 3 uifo800-perturbed-1pct     total 1.018 s | imports 0.384 build 0.115 compile 0.160 run 0.359 (fwd 0.203 grad 0.154) | host=True N=751 F=101 vars=193 finite=True grad!=0=True
+round 3 uifo800-perturbed-10pct    total 1.044 s | imports 0.405 build 0.106 compile 0.145 run 0.387 (fwd 0.220 grad 0.166) | host=True N=751 F=101 vars=193 finite=True grad!=0=True
+round 3 uifo800-20f                total 0.721 s | imports 0.372 build 0.116 compile 0.140 run 0.094 (fwd 0.048 grad 0.045) | host=True N=751 F=20 vars=193 finite=True grad!=0=True
+round 3 uifo800-400f               total 1.951 s | imports 0.368 build 0.132 compile 0.145 run 1.305 (fwd 0.784 grad 0.516) | host=True N=751 F=400 vars=193 finite=True grad!=0=True
+round 3 uifo800-wideband           total 1.301 s | imports 0.588 build 0.125 compile 0.187 run 0.400 (fwd 0.250 grad 0.148) | host=True N=751 F=101 vars=193 finite=True grad!=0=True
+round 3 uifo20-5000                total 1.089 s | imports 0.407 build 0.115 compile 0.161 run 0.406 (fwd 0.244 grad 0.159) | host=True N=769 F=101 vars=192 finite=True grad!=0=True
+round 3 uifo-random3               total 1.109 s | imports 0.436 build 0.165 compile 0.160 run 0.348 (fwd 0.187 grad 0.159) | host=True N=767 F=101 vars=251 finite=True grad!=0=True
+round 3 uifo-random3-ampl          total 0.995 s | imports 0.406 build 0.106 compile 0.172 run 0.311 (fwd 0.170 grad 0.139) | host=True N=701 F=101 vars=251 finite=True grad!=0=True
+round 3 uifo-random3-freqmod       total 1.139 s | imports 0.431 build 0.096 compile 0.202 run 0.410 (fwd 0.281 grad 0.127) | host=True N=701 F=101 vars=251 finite=True grad!=0=True
+round 3 voyager                    total 0.832 s | imports 0.402 build 0.059 compile 0.247 run 0.124 (fwd 0.077 grad 0.044) | host=True N=161 F=101 vars=48 finite=True grad!=0=True
+round 3 voyager-ampl               total 0.718 s | imports 0.408 build 0.048 compile 0.174 run 0.088 (fwd 0.051 grad 0.036) | host=True N=156 F=101 vars=48 finite=True grad!=0=True
+round 3 voyager-freqmod            total 0.693 s | imports 0.371 build 0.061 compile 0.160 run 0.102 (fwd 0.055 grad 0.044) | host=True N=156 F=101 vars=48 finite=True grad!=0=True
+round 3 aligo-ampl                 total 0.702 s | imports 0.435 build 0.049 compile 0.143 run 0.074 (fwd 0.043 grad 0.029) | host=True N=81 F=101 vars=30 finite=True grad!=0=True
+round 3 aligo                      total 0.804 s | imports 0.535 build 0.054 compile 0.149 run 0.066 (fwd 0.039 grad 0.027) | host=True N=82 F=101 vars=30 finite=True grad!=0=True
+round 3 cavity-tuning              total 0.578 s | imports 0.376 build 0.042 compile 0.097 run 0.063 (fwd 0.037 grad 0.025) | host=True N=21 F=0 vars=3 finite=True grad!=0=True
+round 4 uifo800-benchmark          total 1.177 s | imports 0.417 build 0.121 compile 0.170 run 0.468 (fwd 0.229 grad 0.235) | host=True N=751 F=101 vars=193 finite=True grad!=0=True
+round 4 uifo800-perturbed-1pct     total 1.086 s | imports 0.390 build 0.114 compile 0.153 run 0.430 (fwd 0.209 grad 0.219) | host=True N=751 F=101 vars=193 finite=True grad!=0=True
+round 4 uifo800-perturbed-10pct    total 1.178 s | imports 0.381 build 0.117 compile 0.205 run 0.474 (fwd 0.209 grad 0.262) | host=True N=751 F=101 vars=193 finite=True grad!=0=True
+round 4 uifo800-20f                total 0.795 s | imports 0.421 build 0.114 compile 0.168 run 0.093 (fwd 0.040 grad 0.050) | host=True N=751 F=20 vars=193 finite=True grad!=0=True
+round 4 uifo800-400f               total 2.165 s | imports 0.493 build 0.105 compile 0.197 run 1.369 (fwd 0.844 grad 0.520) | host=True N=751 F=400 vars=193 finite=True grad!=0=True
+round 4 uifo800-wideband           total 1.106 s | imports 0.395 build 0.162 compile 0.148 run 0.400 (fwd 0.245 grad 0.153) | host=True N=751 F=101 vars=193 finite=True grad!=0=True
+round 4 uifo20-5000                total 1.233 s | imports 0.425 build 0.143 compile 0.200 run 0.465 (fwd 0.296 grad 0.163) | host=True N=769 F=101 vars=192 finite=True grad!=0=True
+round 4 uifo-random3               total 1.068 s | imports 0.398 build 0.119 compile 0.168 run 0.384 (fwd 0.215 grad 0.168) | host=True N=767 F=101 vars=251 finite=True grad!=0=True
+round 4 uifo-random3-ampl          total 1.049 s | imports 0.417 build 0.124 compile 0.180 run 0.328 (fwd 0.176 grad 0.149) | host=True N=701 F=101 vars=251 finite=True grad!=0=True
+round 4 uifo-random3-freqmod       total 1.245 s | imports 0.558 build 0.100 compile 0.189 run 0.397 (fwd 0.189 grad 0.206) | host=True N=701 F=101 vars=251 finite=True grad!=0=True
+round 4 voyager                    total 0.736 s | imports 0.405 build 0.048 compile 0.170 run 0.113 (fwd 0.063 grad 0.047) | host=True N=161 F=101 vars=48 finite=True grad!=0=True
+round 4 voyager-ampl               total 0.789 s | imports 0.441 build 0.053 compile 0.178 run 0.117 (fwd 0.061 grad 0.052) | host=True N=156 F=101 vars=48 finite=True grad!=0=True
+round 4 voyager-freqmod            total 0.773 s | imports 0.423 build 0.047 compile 0.205 run 0.097 (fwd 0.053 grad 0.042) | host=True N=156 F=101 vars=48 finite=True grad!=0=True
+round 4 aligo-ampl                 total 0.651 s | imports 0.392 build 0.037 compile 0.155 run 0.067 (fwd 0.042 grad 0.024) | host=True N=81 F=101 vars=30 finite=True grad!=0=True
+round 4 aligo                      total 0.654 s | imports 0.390 build 0.041 compile 0.151 run 0.072 (fwd 0.040 grad 0.030) | host=True N=82 F=101 vars=30 finite=True grad!=0=True
+round 4 cavity-tuning              total 0.707 s | imports 0.489 build 0.050 compile 0.099 run 0.068 (fwd 0.045 grad 0.022) | host=True N=21 F=0 vars=3 finite=True grad!=0=True
+round 5 uifo800-benchmark          total 1.226 s | imports 0.542 build 0.138 compile 0.147 run 0.398 (fwd 0.217 grad 0.178) | host=True N=751 F=101 vars=193 finite=True grad!=0=True
+round 5 uifo800-perturbed-1pct     total 1.175 s | imports 0.436 build 0.143 compile 0.167 run 0.428 (fwd 0.248 grad 0.178) | host=True N=751 F=101 vars=193 finite=True grad!=0=True
+round 5 uifo800-perturbed-10pct    total 1.199 s | imports 0.458 build 0.143 compile 0.194 run 0.404 (fwd 0.238 grad 0.165) | host=True N=751 F=101 vars=193 finite=True grad!=0=True
+round 5 uifo800-20f                total 0.870 s | imports 0.515 build 0.108 compile 0.144 run 0.102 (fwd 0.053 grad 0.047) | host=True N=751 F=20 vars=193 finite=True grad!=0=True
+round 5 uifo800-400f               total 2.503 s | imports 0.495 build 0.127 compile 0.173 run 1.708 (fwd 1.022 grad 0.681) | host=True N=751 F=400 vars=193 finite=True grad!=0=True
+round 5 uifo800-wideband           total 1.134 s | imports 0.463 build 0.168 compile 0.152 run 0.351 (fwd 0.200 grad 0.149) | host=True N=751 F=101 vars=193 finite=True grad!=0=True
+round 5 uifo20-5000                total 1.152 s | imports 0.492 build 0.121 compile 0.173 run 0.366 (fwd 0.208 grad 0.157) | host=True N=769 F=101 vars=192 finite=True grad!=0=True
+round 5 uifo-random3               total 1.165 s | imports 0.409 build 0.186 compile 0.188 run 0.381 (fwd 0.224 grad 0.156) | host=True N=767 F=101 vars=251 finite=True grad!=0=True
+round 5 uifo-random3-ampl          total 1.056 s | imports 0.387 build 0.103 compile 0.233 run 0.333 (fwd 0.198 grad 0.133) | host=True N=701 F=101 vars=251 finite=True grad!=0=True
+round 5 uifo-random3-freqmod       total 1.110 s | imports 0.431 build 0.105 compile 0.192 run 0.381 (fwd 0.207 grad 0.169) | host=True N=701 F=101 vars=251 finite=True grad!=0=True
+round 5 voyager                    total 0.905 s | imports 0.504 build 0.079 compile 0.198 run 0.123 (fwd 0.075 grad 0.047) | host=True N=161 F=101 vars=48 finite=True grad!=0=True
+round 5 voyager-ampl               total 0.749 s | imports 0.422 build 0.051 compile 0.186 run 0.090 (fwd 0.047 grad 0.039) | host=True N=156 F=101 vars=48 finite=True grad!=0=True
+round 5 voyager-freqmod            total 0.851 s | imports 0.508 build 0.046 compile 0.204 run 0.094 (fwd 0.058 grad 0.033) | host=True N=156 F=101 vars=48 finite=True grad!=0=True
+round 5 aligo-ampl                 total 0.740 s | imports 0.427 build 0.052 compile 0.200 run 0.061 (fwd 0.030 grad 0.027) | host=True N=81 F=101 vars=30 finite=True grad!=0=True
+round 5 aligo                      total 0.704 s | imports 0.448 build 0.043 compile 0.150 run 0.062 (fwd 0.034 grad 0.025) | host=True N=82 F=101 vars=30 finite=True grad!=0=True
+round 5 cavity-tuning              total 0.701 s | imports 0.477 build 0.034 compile 0.117 run 0.074 (fwd 0.049 grad 0.024) | host=True N=21 F=0 vars=3 finite=True grad!=0=True
+
+summary (seconds): name, median total, min, max | median build, compile, run
+uifo800-benchmark           1.125  0.939  1.226 | 0.124 0.153 0.398
+uifo800-perturbed-1pct      1.086  0.934  1.175 | 0.114 0.157 0.384
+uifo800-perturbed-10pct     1.134  0.905  1.199 | 0.117 0.166 0.387
+uifo800-20f                 0.784  0.648  0.870 | 0.110 0.144 0.094
+uifo800-400f                2.053  1.730  2.503 | 0.127 0.145 1.369
+uifo800-wideband            1.106  0.970  1.301 | 0.125 0.148 0.368
+uifo20-5000                 1.089  0.981  1.233 | 0.121 0.161 0.370
+uifo-random3                1.068  0.943  1.165 | 0.120 0.160 0.366
+uifo-random3-ampl           0.995  0.831  1.056 | 0.106 0.172 0.311
+uifo-random3-freqmod        1.110  0.857  1.245 | 0.096 0.189 0.381
+voyager                     0.737  0.673  0.905 | 0.049 0.187 0.123
+voyager-ampl                0.718  0.638  0.789 | 0.051 0.174 0.096
+voyager-freqmod             0.703  0.624  0.851 | 0.046 0.161 0.097
+aligo-ampl                  0.651  0.552  0.740 | 0.039 0.152 0.061
+aligo                       0.654  0.642  0.804 | 0.043 0.149 0.067
+cavity-tuning               0.661  0.578  0.707 | 0.042 0.099 0.068
+across scenarios: mean 0.980 s, std 0.348 s, min 0.651, max 2.053

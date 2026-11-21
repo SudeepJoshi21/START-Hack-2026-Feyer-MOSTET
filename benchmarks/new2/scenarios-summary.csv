@@ -1,0 +1,17 @@
+case,original_code_path_s,new2_median_s,speedup,dlnS_vs_truth
+uifo800-benchmark,39.22,1.125,34.9,6.5e-10
+uifo800-perturbed-1pct,40.92,1.086,37.7,7.1e-15
+uifo800-perturbed-10pct,38.40,1.134,33.9,0.0e+00
+uifo800-20f,14.92,0.784,19.0,3.4e-10
+uifo800-400f,146.25,2.053,71.2,5.1e-10
+uifo800-wideband,39.97,1.106,36.1,6.7e-11
+uifo20-5000,55.85,1.089,51.3,3.7e-10
+uifo-random3,44.30,1.068,41.5,7.1e-15
+uifo-random3-ampl,35.69,0.995,35.9,1.8e-15
+uifo-random3-freqmod,35.70,1.110,32.2,1.1e-12
+voyager,10.79,0.737,14.6,2.3e-13
+voyager-ampl,10.38,0.718,14.5,1.4e-10
+voyager-freqmod,10.83,0.703,15.4,4.1e-06
+aligo-ampl,9.78,0.651,15.0,1.5e-12
+aligo,9.54,0.654,14.6,7.1e-15
+cavity-tuning,8.83,0.661,13.4,-
