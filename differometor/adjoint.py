@@ -42,7 +42,6 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from jax import vmap
-from jax.scipy.linalg import lu_factor, lu_solve
 
 # Set to False to force the original dense-autodiff path in `simulate` (for A/B tests).
 ENABLED = True
@@ -311,6 +310,8 @@ def _sparse_adjoint(saved, rows, cols, xbar, ubar):
 
 
 def _dense_forward(vals, rows, cols, b, C):
+    from jax.scipy.linalg import lu_factor, lu_solve  # lazy: only the dense fallback needs jax.scipy (~5 ms import)
+
     n = b.shape[-1]
     A = vmap(lambda v: jnp.zeros((n, n), jnp.complex128).at[rows, cols].set(v))(vals)
     lu, piv = vmap(lu_factor)(A)
@@ -320,6 +321,8 @@ def _dense_forward(vals, rows, cols, b, C):
 
 
 def _dense_adjoint(saved, rows, cols, xbar, ubar):
+    from jax.scipy.linalg import lu_solve
+
     lu, piv = saved
     lam_x = vmap(lambda l, p, xb: lu_solve((l, p), xb, trans=1))(lu, piv, xbar)
     lam_u = vmap(lambda l, p, U: vmap(lambda u: lu_solve((l, p), u, trans=0))(U))(lu, piv, ubar)
