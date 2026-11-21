@@ -62,6 +62,25 @@ Signal fill `vmap(update)` alone: compile 4.1–4.9 s, its VJP 8.4–10.5 s; den
 dropped: 36–49 s vs 20 s compile, so the **residual outputs themselves** roughly double forward cost
 (supports WS2's custom_vjp keeping residuals small).
 
+### 1.6 Comparison with the original repo (artificial-scientist-lab/Differometor)
+- **Same code.** Upstream `main` *is* the challenge's pinned commit `b0dc7c7`. `differometor/` and `examples/` are
+  byte-identical, and there are no newer commits or branches with speedups to borrow.
+- **Designed for GPU.** Upstream's speed claims (README) are for **GPU** and for vmapped *batches* of parameter sets
+  (`run_with_parameter_sets`). Dense batched solves are the right design there, and the wrong one for one CPU core.
+- **Finesse used sparse KLU.** The code is ported from Finesse (comments cite the matching `finesse > … .pyx` routine), and an older
+  `simulate.py` (before `7d246c5`) cites `finesse > simulations > sparse > KLU.pyx > solve_noises()`, so the
+  reference implementation solves these systems with **sparse KLU**. That supports WS1. KLU first permutes to
+  **block triangular form (BTF)**. Measured on our matrices (strongly connected components):
+  - signal 751×751 → **one coupled 612×612 block + 139 trivial 1×1 blocks** (12 weakly connected pieces)
+  - carrier 286×286 → one 240×240 block + 46 1×1 blocks
+  A BTF permutation (static, from the pattern) cuts the block that needs real factorisation from 751 to
+  612 (≈0.54× the dense flops). The 1×1 blocks are just back-substitution. It combines with any ordering inside the
+  612 block.
+- **Author's TODO in old `simulate.py`:** *"ideally we would only do this [noise-matrix] update if it is necessary
+  … Otherwise we could just use jnp.tile"*. The original authors also saw the noise matrix as frequency-invariant work (WS3).
+- **History hints the numerics are delicate:** an old comment on `solve` refers to a `linalg_solve_debug.ipynb` that
+  investigated precision errors (matches the plan's cond(A) ≈ 1e30).
+
 ## 2. Correction to my earlier notes
 - Noise matrix `Q`: **66 component-function calls producing 272 non-zeros** (the plan's number is right;
   I had written "66 non-zeros").
