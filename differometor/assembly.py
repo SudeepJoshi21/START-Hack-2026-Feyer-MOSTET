@@ -74,7 +74,7 @@ def _group_calls(function_input_indices, function_indices, output_indices) -> tu
     sorted_inputs = function_input_indices[order]
     groups = tuple(np.split(sorted_inputs, np.cumsum(counts)[:-1]))
 
-    rows, columns = (np.asarray(x).astype(np.int64).reshape(-1) for x in output_indices)
+    rows, columns = (x.astype(np.int64).reshape(-1) for x in np.asarray(output_indices))  # NumPy first: iterating a jax array compiles jit(_unstack)
     rows = np.mod(rows, max(call_count, 1))
     columns = np.mod(columns, OUTPUT_WIDTH)
     flat_outputs = position_of_call[rows] * OUTPUT_WIDTH + columns
@@ -95,9 +95,9 @@ def _signal_plan(signal_matrix, matrix_indices, flat_outputs, carrier_indices, p
     size = base.shape[0]
     width = size + 1
 
-    write_rows, write_columns = (np.asarray(x).astype(np.int64).reshape(-1) for x in matrix_indices)
+    write_rows, write_columns = (x.astype(np.int64).reshape(-1) for x in np.asarray(matrix_indices))
     write_rows, write_columns = np.mod(write_rows, size), np.mod(write_columns, width)
-    place_rows, place_columns = (np.asarray(x).astype(np.int64).reshape(-1) for x in placing_indices)
+    place_rows, place_columns = (x.astype(np.int64).reshape(-1) for x in np.asarray(placing_indices))
     place_rows, place_columns = np.mod(place_rows, size), np.mod(place_columns, width)
     carrier_indices = np.asarray(carrier_indices).astype(np.int64).reshape(-1)
 
@@ -134,9 +134,10 @@ def _signal_plan(signal_matrix, matrix_indices, flat_outputs, carrier_indices, p
     }
 
 
-def assembly_arrays(simulation_arrays: dict) -> dict:
+def assembly_arrays(simulation_arrays: dict, as_jax: bool = True) -> dict:
     """
     Build-time assembly plan for `simulate(..., assembly=...)`. NumPy only.
+    `as_jax=False` returns the NumPy arrays (for the host plan) instead of JAX arrays.
 
     Returns {} if assembly is disabled or a precondition fails; `simulate` then uses the original code.
     """
@@ -168,7 +169,7 @@ def assembly_arrays(simulation_arrays: dict) -> dict:
     except ValueError:
         return {}
     plan["signal"] = signal
-    return _to_jax(plan)
+    return _to_jax(plan) if as_jax else plan
 
 
 def _to_jax(tree):

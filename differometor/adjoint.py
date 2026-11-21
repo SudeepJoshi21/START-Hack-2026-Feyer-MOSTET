@@ -42,7 +42,6 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from jax import vmap
-from jax.scipy.linalg import lu_factor, lu_solve
 
 # Set to False to force the original dense-autodiff path in `simulate` (for A/B tests).
 ENABLED = True
@@ -68,7 +67,7 @@ def signal_pattern(signal_matrix, signal_matrix_indices) -> tuple[np.ndarray, np
     """
     base = np.asarray(signal_matrix)
     n = base.shape[0]
-    rows, cols = (np.asarray(x) for x in signal_matrix_indices)
+    rows, cols = np.asarray(signal_matrix_indices)                 # NumPy first: iterating a jax array compiles
     rows = np.mod(rows, n)                          # guard: negative rows would duplicate entries
     cols = np.mod(cols, n + 1)                      # -1 -> n (right-hand side column)
     in_matrix = cols < n
@@ -77,9 +76,9 @@ def signal_pattern(signal_matrix, signal_matrix_indices) -> tuple[np.ndarray, np
     return (flat // n).astype(np.int32), (flat % n).astype(np.int32)
 
 
-def pattern_arrays(simulation_arrays: dict) -> dict:
+def pattern_arrays(simulation_arrays: dict, as_jax: bool = True) -> dict:
     """
-    Extra keyword arguments for `simulate` that switch on the adjoint path.
+    Extra keyword arguments for `simulate` that switch on the adjoint path (`as_jax=False`: NumPy arrays).
 
     Called by `run_build_step`. Returns {} (=> original dense path) if a precondition of
     the adjoint path does not hold, so unusual setups keep working unchanged:
@@ -99,7 +98,7 @@ def pattern_arrays(simulation_arrays: dict) -> dict:
     n = signal_matrix.shape[0]
     if noise_matrix.shape != (n, n):
         return {}
-    q_rows, q_cols = (np.asarray(x) for x in simulation_arrays["noise_system_matrix_indices"])
+    q_rows, q_cols = np.asarray(simulation_arrays["noise_system_matrix_indices"])
     if q_rows.size and (q_rows.min() < 0 or q_cols.min() < 0):     # segment_sum needs plain indices
         return {}
     if np.unique(q_rows * n + q_cols).size != q_rows.size:
@@ -131,13 +130,14 @@ def pattern_arrays(simulation_arrays: dict) -> dict:
     else:
         noise_parameter_rows = np.zeros(1, dtype=np.int32)
 
-    return {
-        "signal_pattern_rows": jnp.asarray(rows),
-        "signal_pattern_cols": jnp.asarray(cols),
-        "noise_base_rows": jnp.asarray(base_rows.astype(np.int32)),
-        "noise_base_cols": jnp.asarray(base_cols.astype(np.int32)),
-        "noise_parameter_rows": jnp.asarray(noise_parameter_rows),
+    arrays = {
+        "signal_pattern_rows": rows,
+        "signal_pattern_cols": cols,
+        "noise_base_rows": base_rows.astype(np.int32),
+        "noise_base_cols": base_cols.astype(np.int32),
+        "noise_parameter_rows": noise_parameter_rows,
     }
+    return {k: jnp.asarray(v) for k, v in arrays.items()} if as_jax else arrays
 
 
 # ---------------------------------------------------------------------------------------
@@ -153,38 +153,160 @@ def _csc_structure(rows, cols, n):
     return order, rows[order], np.cumsum(indptr)
 
 
-def _host_factorisations(vals, rows, cols, n):
-    """Yield one SuperLU factorisation per frequency (COLAMD ordering, as validated by WS1)."""
-    from scipy.sparse import csc_matrix
-    from scipy.sparse.linalg import splu
+SUPERLU_OPTIONS = dict(ColPerm="COLAMD", PanelSize=4, Relax=4)
+"""
+COLAMD ordering as `splu`'s default, with smaller supernode panel and relaxation sizes than SuperLU's defaults, which
+suit these small, very sparse systems: factorisation of the 101 benchmark
+systems 90.8 -> 76.2 ms with identical accuracy (refined W vs dense LU 1.4e-8 uifo, 1.6e-13 Voyager).
+Pivoting is unchanged (a pivot threshold of 0.1 was 9 ms faster but was not adopted).
+"""
 
-    order, indices, indptr = _csc_structure(np.asarray(rows), np.asarray(cols), n)
-    vals = np.asarray(vals)
-    for f in range(vals.shape[0]):
-        yield f, splu(csc_matrix((vals[f][order], indices, indptr), shape=(n, n)), permc_spec="COLAMD")
+REFINEMENT_STEPS = 1
+"""
+Iterative-refinement steps after every SuperLU solve (x += A^-1 (b - A x)).
+
+Without it the SuperLU noise weights of Voyager (an example setup, not scored) differ from the dense LU by up to
+3.6e-3 (sensitivity |d ln S| 4.2e-3); one step brings that to 2.8e-13, and the scored setup from 3.0e-8 to 4.5e-9.
+Cost: one sparse product + one triangular solve per frequency.
+"""
+
+
+_SUPERLU = None
+
+
+def _superlu():
+    """
+    SciPy's compiled SuperLU core (`scipy.sparse.linalg._dsolve._superlu`), loaded on its own.
+
+    `scipy.sparse.linalg.splu` is a thin wrapper around `_superlu.gstrf`, but importing it executes the whole
+    `scipy.sparse` + `scipy.sparse.linalg` packages (~0.12 s on one CPU: ARPACK, iterative solvers, docstring parsing).
+    The extension only needs NumPy, so it is loaded from its file directly. Falls back to the normal import if the
+    file is not where SciPy 1.18 (pinned) puts it.
+    """
+    global _SUPERLU
+    if _SUPERLU is None:
+        try:
+            import importlib.machinery
+            import importlib.util
+            import os
+
+            folder = os.path.join(os.path.dirname(importlib.util.find_spec("scipy").origin), "sparse", "linalg", "_dsolve")
+            filename = next(f for f in os.listdir(folder) if f.startswith("_superlu.") and f.endswith((".so", ".pyd")))
+            loader = importlib.machinery.ExtensionFileLoader(
+                "scipy.sparse.linalg._dsolve._superlu", os.path.join(folder, filename)
+            )
+            module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+            loader.exec_module(module)
+            _SUPERLU = module
+        except Exception:  # pragma: no cover - unusual SciPy layout
+            from scipy.sparse.linalg._dsolve import _superlu as module
+
+            _SUPERLU = module
+    return _SUPERLU
+
+
+REUSE_ORDERING = True
+"""
+Compute SuperLU's fill-reducing column order (COLAMD) once and reuse it for every frequency (the-prime-model-new).
+
+All systems share one sparsity pattern, so COLAMD returns the same order each time. The matrices are permuted
+symmetrically (B = P^T A P, rows and columns, so the diagonal SuperLU's pivot search prefers stays the same) and
+factorised with ColPerm=NATURAL: same fill (nnz(L+U) 9845), 101 factorisations 80 -> 67 ms. Not bit-identical to
+per-frequency COLAMD (round-off level, 6e-8 relative on the raw solves; refinement and the accuracy gates as before).
+"""
+
+
+def _gstrf(n, data, indices, indptr, options):
+    return _superlu().gstrf(
+        n, data.shape[0], data, indices, indptr, csc_construct_func=_no_csc, ilu=False, options=options
+    )
+
+
+class Factorisations:
+    """
+    SuperLU factorisations of the F systems vals[f] (F, nnz) on one pattern (rows, cols), with refined solves for
+    op(A) in {A, A^T, A^H}, batched over frequencies. Refinement (x += op(A)^-1 (b - op(A) x)) computes the
+    residual products of all frequencies in one vectorised step; per bin the sums run in the same order as one
+    frequency at a time, so results equal the unbatched products exactly.
+    """
+
+    def __init__(self, vals, rows, cols, n):
+        vals = np.asarray(vals)
+        rows, cols = np.asarray(rows).astype(np.int64), np.asarray(cols).astype(np.int64)
+        self.n, self.perm = n, None
+        options = SUPERLU_OPTIONS
+        if REUSE_ORDERING and vals.shape[0] > 1:
+            order, indices, indptr = _csc_structure(rows, cols, n)
+            first = _gstrf(n, np.ascontiguousarray(vals[0][order], dtype=np.complex128),
+                           indices.astype(np.intc), indptr.astype(np.intc), options)
+            perm = np.argsort(np.asarray(first.perm_c))     # B[i, j] = A[perm[i], perm[j]]
+            position = np.argsort(perm)
+            rows, cols = position[rows], position[cols]
+            self.perm, options = perm, dict(options, ColPerm="NATURAL")
+        order, indices, indptr = _csc_structure(rows, cols, n)
+        self.data = np.ascontiguousarray(vals[:, order], dtype=np.complex128)   # (F, nnz), CSC order
+        self.rows, self.columns = indices, np.repeat(np.arange(n), np.diff(indptr))
+        indices, indptr = indices.astype(np.intc), indptr.astype(np.intc)
+        self.factors = [_gstrf(n, self.data[f], indices, indptr, options) for f in range(vals.shape[0])]
+        self._index = {}
+
+    def __len__(self):
+        return len(self.factors)
+
+    def _apply(self, x, trans):
+        """op(A_f) x[f] for all f; x (F, n, k)."""
+        if trans == "H":
+            return np.conj(self._apply(np.conj(x), "T"))
+        source, target = (self.columns, self.rows) if trans == "N" else (self.rows, self.columns)
+        frequencies, n, k = x.shape
+        if (trans, k) not in self._index:
+            self._index[(trans, k)] = (
+                (np.arange(frequencies)[:, None] * n + target[None, :])[:, :, None] * k + np.arange(k)
+            ).ravel()
+        index = self._index[(trans, k)]
+        terms = self.data[:, :, None] * x[:, source, :]
+        size = frequencies * n * k
+        out = (np.bincount(index, terms.real.ravel(), minlength=size)
+               + 1j * np.bincount(index, terms.imag.ravel(), minlength=size))
+        return out.reshape(x.shape)
+
+    def _solve(self, rhs, trans):
+        return np.stack([lu.solve(rhs[f], trans=trans) for f, lu in enumerate(self.factors)])
+
+    def solve(self, rhs, trans, refine=True):
+        """op(A_f)^-1 rhs[f] for every frequency f; rhs (F, n) or (F, n, k)."""
+        shape = rhs.shape
+        rhs = np.asarray(rhs, dtype=np.complex128).reshape(shape[0], shape[1], -1)
+        if self.perm is not None:
+            rhs = rhs[:, self.perm]
+        x = self._solve(rhs, trans)
+        for _ in range(REFINEMENT_STEPS if refine else 0):
+            x = x + self._solve(rhs - self._apply(x, trans), trans)
+        if self.perm is not None:
+            unpermuted = np.empty_like(x)
+            unpermuted[:, self.perm] = x
+            x = unpermuted
+        return x.reshape(shape)
+
+
+def _no_csc(*args, **kwargs):
+    raise NotImplementedError("L/U factors are not needed")
 
 
 def _host_forward(vals, rows, cols, b, C):
     b, C = np.asarray(b), np.asarray(C)
-    n = b.shape[-1]
-    x = np.empty(b.shape, dtype=np.complex128)
-    W = np.empty(C.shape, dtype=np.complex128)
-    for f, lu in _host_factorisations(vals, rows, cols, n):
-        x[f] = lu.solve(b[f], trans="N")                 # A x = b
-        if C.shape[1]:
-            W[f] = lu.solve(C[f].T.copy(), trans="H").T  # A^H w_d = c_d, all detectors at once
-    return x, W
+    factors = Factorisations(vals, rows, cols, b.shape[-1])
+    x = factors.solve(b, "N")                                              # A x = b
+    W = factors.solve(np.swapaxes(C, 1, 2), "H").swapaxes(1, 2) if C.shape[1] else np.zeros(C.shape, np.complex128)
+    return x, W                                                            # A^H w_d = c_d, all detectors at once
 
 
 def _host_adjoint(vals, rows, cols, xbar, ubar):
     xbar, ubar = np.asarray(xbar), np.asarray(ubar)
-    n = xbar.shape[-1]
-    lam_x = np.empty(xbar.shape, dtype=np.complex128)
-    lam_u = np.empty(ubar.shape, dtype=np.complex128)
-    for f, lu in _host_factorisations(vals, rows, cols, n):   # refactorise: ~0.6 ms
-        lam_x[f] = lu.solve(xbar[f], trans="T")               # A^T lam_x = xbar
-        if ubar.shape[1]:
-            lam_u[f] = lu.solve(ubar[f].T.copy(), trans="N").T  # A lam_u = ubar
+    factors = Factorisations(vals, rows, cols, xbar.shape[-1])            # refactorise: ~0.7 ms per frequency
+    lam_x = factors.solve(xbar, "T")                                       # A^T lam_x = xbar
+    lam_u = (factors.solve(np.swapaxes(ubar, 1, 2), "N").swapaxes(1, 2)    # A lam_u = ubar
+             if ubar.shape[1] else np.zeros(ubar.shape, np.complex128))
     return lam_x, lam_u
 
 
@@ -231,6 +353,8 @@ def _sparse_adjoint(saved, rows, cols, xbar, ubar):
 
 
 def _dense_forward(vals, rows, cols, b, C):
+    from jax.scipy.linalg import lu_factor, lu_solve  # lazy: only the dense fallback needs jax.scipy (~5 ms import)
+
     n = b.shape[-1]
     A = vmap(lambda v: jnp.zeros((n, n), jnp.complex128).at[rows, cols].set(v))(vals)
     lu, piv = vmap(lu_factor)(A)
@@ -240,6 +364,8 @@ def _dense_forward(vals, rows, cols, b, C):
 
 
 def _dense_adjoint(saved, rows, cols, xbar, ubar):
+    from jax.scipy.linalg import lu_solve
+
     lu, piv = saved
     lam_x = vmap(lambda l, p, xb: lu_solve((l, p), xb, trans=1))(lu, piv, xbar)
     lam_u = vmap(lambda l, p, U: vmap(lambda u: lu_solve((l, p), u, trans=0))(U))(lu, piv, ubar)
