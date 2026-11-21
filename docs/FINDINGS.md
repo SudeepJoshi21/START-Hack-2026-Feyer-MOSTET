@@ -79,3 +79,4 @@ limit. `bench.py check` fails a candidate whose sensitivity drifts > 5e-6 (in ln
 | 2026-11-16 | upstream | baseline (organisers) | Xeon 8468, 101 | 44.20 | 22.92 | 17.68 | PASS | `benchmarks/cpu-baseline.json` |
 | 2026-11-21 | upstream | baseline (plan §1) | EPYC 7763, 101 | 66.79 | 37.61 | ~24.97 | PASS | `OPTIMIZATION_PLAN.md` |
 | 2026-11-21 | upstream vs itself | noise calibration (`bench.py parts --ref 02ec741`) | Ryzen laptop, 10 | 70.0 / 64.1 | 60.3 / 53.6 | 4.58 / 4.46 | PASS (0 diff) | same code, ~9% apart |
+| 2026-11-21 | `ws1-solver` | WS1(a): one LU of A per frequency reused for the A and Aᴴ solves; noise via Re(wᴴQw), third solve removed | EPYC 7763, 101 | 60.90 | 41.23 | 16.61 | PASS (warn: noise 1.6e-8, grad 2.7e-6 rel) | forward run 23.5 → 11.8 s; same-session baseline first run 67.50; compile within ±20% noise |

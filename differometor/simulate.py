@@ -21,6 +21,8 @@ import jax
 from time import time
 import jax.numpy as jnp
 from jax import lax, vmap, jit
+from jax.lax import linalg as lax_linalg
+from jax.scipy.linalg import lu_solve
 
 from differometor.setups import Setup
 from differometor.build import build, pairs_to_arrays, prepare_arrays, LINKING_FUNCTIONS
@@ -57,6 +59,60 @@ def solve(matrix: jnp.ndarray, right_hand_side: jnp.ndarray) -> jnp.ndarray:
     right_hand_side = right_hand_side.astype(jnp.complex128)
     matrix = matrix.astype(jnp.complex128)
     return jnp.linalg.solve(matrix, right_hand_side)
+
+
+def lu_factor(matrix: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    LU-factorize a (batch of) system matrices once so several solves can share it.
+
+    Gradients do not flow through the factorization itself: like `jnp.linalg.solve`,
+    the solves below are wrapped in `lax.custom_linear_solve`, which differentiates
+    through the matrix-vector product instead.
+
+    Returns
+    -------
+    lu : jnp.ndarray
+        Packed LU factors, shape (..., N, N).
+    pivots : jnp.ndarray
+        LAPACK-style pivot indices, shape (..., N).
+    """
+    lu, pivots, _ = lax_linalg.lu(lax.stop_gradient(matrix.astype(jnp.complex128)))
+    return lu, pivots
+
+
+def solve_with_lu(matrix, right_hand_side, lu, pivots):
+    """
+    Solve `matrix @ x = right_hand_side` for one system, reusing its LU factors.
+
+    Shapes: matrix (N, N), right_hand_side (N,), lu (N, N), pivots (N,).
+    Equivalent to `solve(matrix, right_hand_side)` including its gradients.
+    """
+    matrix = matrix.astype(jnp.complex128)
+    return lax.custom_linear_solve(
+        lambda x: matrix @ x,
+        right_hand_side.astype(jnp.complex128),
+        solve=lambda _, x: lu_solve((lu, pivots), x, trans=0),
+        transpose_solve=lambda _, x: lu_solve((lu, pivots), x, trans=1),
+    )
+
+
+def solve_hermitian_with_lu(matrix, right_hand_side, lu, pivots):
+    """
+    Solve `matrix^H @ x = right_hand_side` (conjugate transpose) reusing the LU of `matrix`.
+
+    Shapes as in `solve_with_lu`. Equivalent to
+    `solve(jnp.conjugate(matrix).T, right_hand_side)` including its gradients, but
+    needs no second factorization.
+    """
+    matrix = matrix.astype(jnp.complex128)
+    return lax.custom_linear_solve(
+        lambda x: jnp.conjugate(matrix).T @ x,
+        right_hand_side.astype(jnp.complex128),
+        # A^H x = b
+        solve=lambda _, x: lu_solve((lu, pivots), x, trans=2),
+        # The linear transpose of A^H is conj(A): conj(A) y = r  <=>  y = conj(A^-1 conj(r)).
+        transpose_solve=lambda _, x: jnp.conjugate(lu_solve((lu, pivots), jnp.conjugate(x), trans=0)),
+    )
 
 
 def update(
@@ -332,7 +388,11 @@ def simulate(
         jnp.conjugate(signal_matrix[:, carrier_size : carrier_size * 2, carrier_size * 2 :])
     )
 
-    signal = vmap(solve)(signal_matrix[:, :, :-1], signal_matrix[:, :, -1])
+    # Factorize the signal system once per frequency; the signal solve and the
+    # conjugate-transposed noise solve below both reuse these factors.
+    signal_system = signal_matrix[:, :, :-1]
+    signal_lu, signal_pivots = lu_factor(signal_system)
+    signal = vmap(solve_with_lu)(signal_system, signal_matrix[:, :, -1], signal_lu, signal_pivots)
 
     # --------------------
     # Quantum noise solve
@@ -366,13 +426,15 @@ def simulate(
         :, :, carrier.shape[1] : carrier.shape[1] * 2
     ].set(lower_carrier_selections)
 
-    # Back-propagate detector weights by solving the transposed conjugated signal system.
-    transposed_conjugated_signal_matrix = jnp.transpose(jnp.conjugate(signal_matrix[:, :, :-1]), (0, 2, 1))
+    # Back-propagate detector weights by solving the conjugate-transposed signal system,
+    # w = A^-H c, reusing the LU factors of A.
     carrier_selections = jnp.broadcast_to(
         carrier_selections,
-        (carrier_selections.shape[0], transposed_conjugated_signal_matrix.shape[0], carrier_selections.shape[2]),
+        (carrier_selections.shape[0], signal_system.shape[0], carrier_selections.shape[2]),
     )
-    noise_weights = vmap(vmap(solve), in_axes=(None, 0))(transposed_conjugated_signal_matrix, carrier_selections)
+    noise_weights = vmap(vmap(solve_hermitian_with_lu), in_axes=(None, 0, None, None))(
+        signal_system, carrier_selections, signal_lu, signal_pivots
+    )
 
     # Update noise source matrix (may depend on current parameters).
     noise_matrix = vmap(update, in_axes=(0, None, None, None, None, None))(
@@ -384,30 +446,14 @@ def simulate(
         noise_function_indices,
     )
 
-    def matmul_single_batch(matrix_batch: jnp.ndarray, vector_batch: jnp.ndarray) -> jnp.ndarray:
-        """
-        Multiply a batch of matrices with a batch of vectors.
+    # Project noise sources onto the detector weights. The original formulation
+    # propagated Q w through a second solve, z = A^-1 Q w, and read out Re(c^H z).
+    # Because A^H w = c we have c^H A^-1 = w^H, so Re(c^H z) = Re(w^H Q w):
+    # the same quantity without another linear solve.
+    noise_sources = jnp.einsum("fij,dfj->dfi", noise_matrix, noise_weights)
 
-        Parameters
-        ----------
-        matrix_batch : jnp.ndarray
-            Shape (B, N, N).
-        vector_batch : jnp.ndarray
-            Shape (B, N).
-
-        Returns
-        -------
-        product : jnp.ndarray
-            Shape (B, N).
-        """
-        return jnp.einsum("bij,bj->bi", matrix_batch, vector_batch)
-
-    # Project noise sources into the system and propagate through the signal matrix.
-    noise_sources = vmap(matmul_single_batch, in_axes=(None, 0))(noise_matrix, noise_weights)
-    covariances = vmap(vmap(solve), in_axes=(None, 0))(signal_matrix[:, :, :-1], noise_sources)
-
-    # Convert propagated covariances into amplitude spectral density.
-    temporary_sum = jnp.sum(jnp.real(covariances * jnp.conjugate(carrier_selections)), axis=2)
+    # Convert the projected noise into amplitude spectral density.
+    temporary_sum = jnp.sum(jnp.real(jnp.conjugate(noise_weights) * noise_sources), axis=2)
     noise = jnp.sqrt(2 * temporary_sum * UNIT_VACUUM * H_PLANCK * F0 * 0.25)
 
     return carrier.T, signal.T, noise.squeeze()
