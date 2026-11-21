@@ -77,5 +77,12 @@ if [ "${SCENARIOS:-1}" != "0" ]; then
 fi
 
 echo
-[ $FAIL = 0 ] && echo "GATE: ALL PASS (commit $(git rev-parse --short HEAD))" || echo "GATE: FAILED"
+if [ $FAIL = 0 ]; then
+  # Ledger read by scripts/pre-push (git hook): only simulator states that passed this gate may be pushed.
+  LEDGER="$(git rev-parse --git-common-dir)/gate-passed"
+  echo "$(git rev-parse HEAD:differometor) $(git rev-parse HEAD:benchmark.py) $(git rev-parse HEAD) $(date -u +%FT%TZ) REPEATS=$REPEATS SCENARIOS=${SCENARIOS:-1}" >> "$LEDGER"
+  echo "GATE: ALL PASS (commit $(git rev-parse --short HEAD)); recorded in $LEDGER"
+else
+  echo "GATE: FAILED"
+fi
 exit $FAIL
