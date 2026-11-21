@@ -24,7 +24,8 @@ step() { echo; echo "=== $*"; }
 bad() { echo "GATE FAIL: $*"; FAIL=1; }
 
 step "1. code state"
-echo "commit $(git rev-parse HEAD)"
+START=$(git rev-parse HEAD)   # the commit under test; the gate fails if HEAD or tracked files change during the run
+echo "commit $START"
 [ -z "$(git status --porcelain --untracked-files=no)" ] || bad "uncommitted changes to tracked files"
 [ "$(git rev-parse HEAD:benchmark.py)" = "39f1fd3053554d7894762c0595105ec47b322049" ] || bad "benchmark.py differs from the official blob"
 echo "ff4ba353a2a03cdce7f3e61bad729c2e00888d842c28ba9cf699f95afb87e138  examples/data/uifo_800_3000.json
@@ -79,11 +80,12 @@ if [ "${SCENARIOS:-1}" != "0" ]; then
 fi
 
 echo
+[ "$(git rev-parse HEAD)" = "$START" ] && [ -z "$(git status --porcelain --untracked-files=no)" ] || bad "code changed during the gate run (HEAD or tracked files): result not attributable to $START"
 if [ $FAIL = 0 ]; then
   # Ledger read by scripts/pre-push (git hook): only simulator states that passed this gate may be pushed.
   LEDGER="$(git rev-parse --git-common-dir)/gate-passed"
-  echo "$(git rev-parse HEAD:differometor) $(git rev-parse HEAD:benchmark.py) $(git rev-parse HEAD) $(date -u +%FT%TZ) REPEATS=$REPEATS SCENARIOS=${SCENARIOS:-1}" >> "$LEDGER"
-  echo "GATE: ALL PASS (commit $(git rev-parse --short HEAD)); recorded in $LEDGER"
+  echo "$(git rev-parse $START:differometor) $(git rev-parse $START:benchmark.py) $START $(date -u +%FT%TZ) REPEATS=$REPEATS SCENARIOS=${SCENARIOS:-1}" >> "$LEDGER"
+  echo "GATE: ALL PASS (commit ${START:0:7}); recorded in $LEDGER"
 else
   echo "GATE: FAILED"
 fi
