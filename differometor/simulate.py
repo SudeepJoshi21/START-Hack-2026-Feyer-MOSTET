@@ -22,6 +22,7 @@ from time import time
 import jax.numpy as jnp
 from jax import lax, vmap, jit
 
+from differometor import adjoint
 from differometor.setups import Setup
 from differometor.build import build, pairs_to_arrays, prepare_arrays, LINKING_FUNCTIONS
 from differometor.components import FUNCTIONS, UNIT_VACUUM, H_PLANCK, F0
@@ -105,10 +106,30 @@ def update(
     Python list of callables referenced as a global is treated as static during
     tracing, which keeps the function jittable as long as the list is stable.
     """
+    outputs = component_outputs(parameters, function_input_indices, output_indices, function_indices)
+    return matrix.at[matrix_indices[0], matrix_indices[1]].set(outputs)
+
+
+def component_outputs(
+    parameters: jnp.ndarray,
+    function_input_indices: jnp.ndarray,
+    output_indices: tuple[jnp.ndarray, jnp.ndarray],
+    function_indices: jnp.ndarray,
+) -> jnp.ndarray:
+    """
+    The values `update` writes into the matrix, without building the matrix.
+
+    [WS2] Split out of `update` (unchanged behaviour) so the adjoint noise path can use
+    the noise-matrix values sparsely instead of a dense (F, N, N) matrix.
+
+    Returns
+    -------
+    outputs : jnp.ndarray
+        Shape (M,), aligned with `matrix_indices` of `update`.
+    """
     function_inputs = parameters[function_input_indices]
     output_matrix = vmap(lambda i, x: lax.switch(i, FUNCTIONS, x))(function_indices, function_inputs)
-    outputs = output_matrix[output_indices[0], output_indices[1]]
-    return matrix.at[matrix_indices[0], matrix_indices[1]].set(outputs)
+    return output_matrix[output_indices[0], output_indices[1]]
 
 
 def expand_parameters(array: jnp.ndarray, indices: jnp.ndarray, values: jnp.ndarray) -> jnp.ndarray:
@@ -186,6 +207,11 @@ def simulate(
     noise_function_indices: jnp.ndarray,
     noise_output_indices: tuple[jnp.ndarray, jnp.ndarray],
     noise_system_matrix_indices: tuple[jnp.ndarray, jnp.ndarray],
+    # [WS2] keyword-only (not counted by run_build_step's positional zip); set by
+    # run_build_step via adjoint.pattern_arrays. None => original dense-autodiff path.
+    *,
+    signal_pattern_rows: jnp.ndarray | None = None,
+    signal_pattern_cols: jnp.ndarray | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Run one full simulation pass: carrier, signal, and quantum noise.
@@ -332,7 +358,11 @@ def simulate(
         jnp.conjugate(signal_matrix[:, carrier_size : carrier_size * 2, carrier_size * 2 :])
     )
 
-    signal = vmap(solve)(signal_matrix[:, :, :-1], signal_matrix[:, :, -1])
+    # [WS2] With a sparsity pattern, the signal solve happens together with the noise
+    # weights in adjoint.solve_signal_and_noise_weights (one LU, custom gradient) below.
+    use_adjoint = signal_pattern_rows is not None and adjoint.ENABLED
+    if not use_adjoint:
+        signal = vmap(solve)(signal_matrix[:, :, :-1], signal_matrix[:, :, -1])
 
     # --------------------
     # Quantum noise solve
@@ -365,6 +395,30 @@ def simulate(
     carrier_selections = upper_carrier_selections.at[
         :, :, carrier.shape[1] : carrier.shape[1] * 2
     ].set(lower_carrier_selections)
+
+    if use_adjoint:
+        # [WS2] Adjoint path (differometor/adjoint.py, docs/WS2_CHANGELOG.md):
+        #   one LU per frequency gives  signal x = A^-1 b  and  weights w = A^-H c,
+        #   noise sum = Re(w^H Q w)  (replaces the third solve A^-1 Q w),
+        #   custom_vjp keeps the AD tape to LU factors + x + w (no dense cotangents).
+        num_signal = signal_matrix.shape[0]
+        carrier_selections = jnp.broadcast_to(
+            carrier_selections,
+            (carrier_selections.shape[0], num_signal, carrier_selections.shape[2]),
+        )                                                            # (D, F, N)
+        values = signal_matrix[:, signal_pattern_rows, signal_pattern_cols]   # (F, nnz)
+        signal, noise_weights = vmap(
+            adjoint.solve_signal_and_noise_weights, in_axes=(0, None, None, 0, 1)
+        )(values, signal_pattern_rows, signal_pattern_cols, signal_matrix[:, :, -1], carrier_selections)
+        noise_values = vmap(component_outputs, in_axes=(0, None, None, None))(
+            parameters, noise_function_input_indices, noise_output_indices, noise_function_indices
+        )                                                            # (F, M)
+        noise_base = noise_matrix.at[noise_system_matrix_indices[0], noise_system_matrix_indices[1]].set(0)
+        temporary_sum = vmap(adjoint.quadratic_noise, in_axes=(0, 0, None, None, None))(
+            noise_weights, noise_values, noise_system_matrix_indices[0], noise_system_matrix_indices[1], noise_base
+        ).T                                                          # (D, F)
+        noise = jnp.sqrt(2 * temporary_sum * UNIT_VACUUM * H_PLANCK * F0 * 0.25)
+        return carrier.T, signal.T, noise.squeeze()
 
     # Back-propagate detector weights by solving the transposed conjugated signal system.
     transposed_conjugated_signal_matrix = jnp.transpose(jnp.conjugate(signal_matrix[:, :, :-1]), (0, 2, 1))
@@ -477,6 +531,8 @@ def run_build_step(
         )
 
     simulation_arrays = {arg_names[i]: array for i, array in enumerate(all_arrays)}
+    # [WS2] Static sparsity pattern => adjoint path in `simulate` ({} keeps the old path).
+    simulation_arrays.update(adjoint.pattern_arrays(simulation_arrays))
 
     if timeit:
         for array in simulation_arrays.values():
