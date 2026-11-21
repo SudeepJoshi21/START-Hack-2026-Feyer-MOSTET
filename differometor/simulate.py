@@ -18,11 +18,13 @@ Conventions used throughout:
 """
 
 import jax
+import numpy as np
 from time import time
 import jax.numpy as jnp
 from jax import lax, vmap, jit
 
 from differometor import adjoint
+from differometor import assembly as _assembly
 from differometor.setups import Setup
 from differometor.build import build, pairs_to_arrays, prepare_arrays, LINKING_FUNCTIONS
 from differometor.components import FUNCTIONS, UNIT_VACUUM, H_PLANCK, F0
@@ -215,6 +217,8 @@ def simulate(
     noise_base_rows: jnp.ndarray | None = None,
     noise_base_cols: jnp.ndarray | None = None,
     noise_parameter_rows: jnp.ndarray | None = None,
+    # [WS3] build-time assembly plan (assembly.assembly_arrays). None => original `vmap(lax.switch)` assembly.
+    assembly: dict | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Run one full simulation pass: carrier, signal, and quantum noise.
@@ -315,57 +319,80 @@ def simulate(
     # --------------------
     # Carrier solve
     # --------------------
+    # [WS3] Grouped component evaluation + pattern assembly when a plan is given (static: pytree structure).
+    use_assembly = bool(assembly)
+    # [WS2] With a sparsity pattern, the signal solve happens together with the noise
+    # weights in adjoint.solve_signal_and_noise_weights (one LU, custom gradient) below.
+    use_adjoint = signal_pattern_rows is not None and adjoint.ENABLED
+
     parameters = expand_parameters(parameters, carrier_changing_parameter_indices, carrier_changing_values)
-    carrier_matrix = vmap(update, in_axes=(0, None, None, None, None, None))(
-        parameters,
-        carrier_matrix,
-        carrier_function_input_indices,
-        carrier_output_indices,
-        carrier_matrix_indices,
-        carrier_function_indices,
-    )
+    if use_assembly:
+        carrier_matrix = vmap(_assembly.update, in_axes=(0, None, None, None))(
+            parameters, carrier_matrix, assembly["carrier"], carrier_matrix_indices
+        )
+    else:
+        carrier_matrix = vmap(update, in_axes=(0, None, None, None, None, None))(
+            parameters,
+            carrier_matrix,
+            carrier_function_input_indices,
+            carrier_output_indices,
+            carrier_matrix_indices,
+            carrier_function_indices,
+        )
     carrier = vmap(solve)(carrier_matrix[:, :, :-1], carrier_matrix[:, :, -1])
 
     # --------------------
     # Signal solve
     # --------------------
     parameters = expand_parameters(parameters, signal_changing_parameter_indices, signal_changing_values)
-    signal_matrix = vmap(update, in_axes=(0, None, None, None, None, None))(
-        parameters,
-        signal_matrix,
-        signal_function_input_indices,
-        signal_output_indices,
-        signal_matrix_indices,
-        signal_function_indices,
-    )
+    signal_size = signal_matrix.shape[0]
+    if use_assembly:
+        # [WS3] values on the sparsity pattern + right-hand side, no dense matrix. Same result as the
+        # dense steps below (base -> update -> carrier scaling -> conjugated blocks); see assembly.py.
+        # run_build_step guarantees plan["rows"/"cols"] == signal_pattern_rows/cols (same order).
+        signal_values, signal_rhs = _assembly.signal_values_and_rhs(
+            parameters, carrier, assembly["signal"], signal_size
+        )
+        if not use_adjoint:
+            signal_system = _assembly.densify(signal_values, assembly["signal"], signal_size)
+    else:
+        signal_matrix = vmap(update, in_axes=(0, None, None, None, None, None))(
+            parameters,
+            signal_matrix,
+            signal_function_input_indices,
+            signal_output_indices,
+            signal_matrix_indices,
+            signal_function_indices,
+        )
 
-    # Scale signal connector entries by the carrier solution at the respective spaces.
-    # The minus sign matches the sign convention used by the referenced modeling tools.
-    signal_entries = (
-        -signal_matrix[:, signal_carrier_placing_indices[0], signal_carrier_placing_indices[1]]
-        * carrier[:, signal_carrier_indices.flatten()]
-    )
-    signal_matrix = signal_matrix.at[:, signal_carrier_placing_indices[0], signal_carrier_placing_indices[1]].set(
-        signal_entries
-    )
+        # Scale signal connector entries by the carrier solution at the respective spaces.
+        # The minus sign matches the sign convention used by the referenced modeling tools.
+        signal_entries = (
+            -signal_matrix[:, signal_carrier_placing_indices[0], signal_carrier_placing_indices[1]]
+            * carrier[:, signal_carrier_indices.flatten()]
+        )
+        signal_matrix = signal_matrix.at[:, signal_carrier_placing_indices[0], signal_carrier_placing_indices[1]].set(
+            signal_entries
+        )
 
-    # Apply conjugation rules to enforce upper and lower sideband symmetry.
-    carrier_size = carrier.shape[1]
-    signal_matrix = signal_matrix.at[:, carrier_size : carrier_size * 2, carrier_size : carrier_size * 2].set(
-        jnp.conjugate(signal_matrix[:, carrier_size : carrier_size * 2, carrier_size : carrier_size * 2])
-    )
-    signal_matrix = signal_matrix.at[:, carrier_size * 2 :, :carrier_size].set(
-        jnp.conjugate(signal_matrix[:, carrier_size * 2 :, :carrier_size])
-    )
-    signal_matrix = signal_matrix.at[:, carrier_size : carrier_size * 2, carrier_size * 2 :].set(
-        jnp.conjugate(signal_matrix[:, carrier_size : carrier_size * 2, carrier_size * 2 :])
-    )
+        # Apply conjugation rules to enforce upper and lower sideband symmetry.
+        carrier_size = carrier.shape[1]
+        signal_matrix = signal_matrix.at[:, carrier_size : carrier_size * 2, carrier_size : carrier_size * 2].set(
+            jnp.conjugate(signal_matrix[:, carrier_size : carrier_size * 2, carrier_size : carrier_size * 2])
+        )
+        signal_matrix = signal_matrix.at[:, carrier_size * 2 :, :carrier_size].set(
+            jnp.conjugate(signal_matrix[:, carrier_size * 2 :, :carrier_size])
+        )
+        signal_matrix = signal_matrix.at[:, carrier_size : carrier_size * 2, carrier_size * 2 :].set(
+            jnp.conjugate(signal_matrix[:, carrier_size : carrier_size * 2, carrier_size * 2 :])
+        )
+        signal_system = signal_matrix[:, :, :-1]
+        signal_rhs = signal_matrix[:, :, -1]
+        if use_adjoint:
+            signal_values = signal_matrix[:, signal_pattern_rows, signal_pattern_cols]   # (F, nnz)
 
-    # [WS2] With a sparsity pattern, the signal solve happens together with the noise
-    # weights in adjoint.solve_signal_and_noise_weights (one LU, custom gradient) below.
-    use_adjoint = signal_pattern_rows is not None and adjoint.ENABLED
     if not use_adjoint:
-        signal = vmap(solve)(signal_matrix[:, :, :-1], signal_matrix[:, :, -1])
+        signal = vmap(solve)(signal_system, signal_rhs)
 
     # --------------------
     # Quantum noise solve
@@ -405,22 +432,28 @@ def simulate(
         #   signal x = A^-1 b and weights w = A^-H c; noise sum = Re(w^H Q w)
         #   (replaces the third solve A^-1 Q w); custom_vjp keeps the AD tape to
         #   the sparse values of A + x + w (no dense cotangents, no LU factors).
-        num_signal = signal_matrix.shape[0]
+        num_signal = signal_rhs.shape[0]
         carrier_selections = jnp.broadcast_to(
             carrier_selections,
             (carrier_selections.shape[0], num_signal, carrier_selections.shape[2]),
         )                                                            # (D, F, N)
-        values = signal_matrix[:, signal_pattern_rows, signal_pattern_cols]   # (F, nnz)
         signal, noise_weights = adjoint.solve_signal_and_noise_weights(
-            values, signal_pattern_rows, signal_pattern_cols, signal_matrix[:, :, -1],
+            signal_values, signal_pattern_rows, signal_pattern_cols, signal_rhs,
             jnp.swapaxes(carrier_selections, 0, 1),                  # (F, D, N)
         )                                                            # (F, N), (F, D, N)
         # Noise matrix Q as non-zeros: the M values `update` writes (computed once when no
         # swept parameter feeds a noise function) plus the K base entries it keeps (K = 0 here).
         noise_rows = parameters if noise_parameter_rows is None else parameters[noise_parameter_rows]
-        noise_values = vmap(component_outputs, in_axes=(0, None, None, None))(
-            noise_rows, noise_function_input_indices, noise_output_indices, noise_function_indices
-        )                                                            # (1 or F, M)
+        if use_assembly:
+            # [WS3] grouped evaluation, reordered to align with noise_system_matrix_indices
+            noise_plan = assembly["noise"]
+            noise_values = vmap(lambda row: _assembly.component_outputs(row, noise_plan["groups"]))(noise_rows)[
+                :, noise_plan["outputs"]
+            ]                                                        # (1 or F, M)
+        else:
+            noise_values = vmap(component_outputs, in_axes=(0, None, None, None))(
+                noise_rows, noise_function_input_indices, noise_output_indices, noise_function_indices
+            )                                                        # (1 or F, M)
         base_values = jnp.broadcast_to(
             noise_matrix[noise_base_rows, noise_base_cols], (noise_values.shape[0], noise_base_rows.shape[0])
         )                                                            # (1 or F, K)
@@ -436,7 +469,7 @@ def simulate(
         return carrier.T, signal.T, noise.squeeze()
 
     # Back-propagate detector weights by solving the transposed conjugated signal system.
-    transposed_conjugated_signal_matrix = jnp.transpose(jnp.conjugate(signal_matrix[:, :, :-1]), (0, 2, 1))
+    transposed_conjugated_signal_matrix = jnp.transpose(jnp.conjugate(signal_system), (0, 2, 1))
     carrier_selections = jnp.broadcast_to(
         carrier_selections,
         (carrier_selections.shape[0], transposed_conjugated_signal_matrix.shape[0], carrier_selections.shape[2]),
@@ -444,14 +477,19 @@ def simulate(
     noise_weights = vmap(vmap(solve), in_axes=(None, 0))(transposed_conjugated_signal_matrix, carrier_selections)
 
     # Update noise source matrix (may depend on current parameters).
-    noise_matrix = vmap(update, in_axes=(0, None, None, None, None, None))(
-        parameters,
-        noise_matrix,
-        noise_function_input_indices,
-        noise_output_indices,
-        noise_system_matrix_indices,
-        noise_function_indices,
-    )
+    if use_assembly:
+        noise_matrix = vmap(_assembly.update, in_axes=(0, None, None, None))(
+            parameters, noise_matrix, assembly["noise"], noise_system_matrix_indices
+        )
+    else:
+        noise_matrix = vmap(update, in_axes=(0, None, None, None, None, None))(
+            parameters,
+            noise_matrix,
+            noise_function_input_indices,
+            noise_output_indices,
+            noise_system_matrix_indices,
+            noise_function_indices,
+        )
 
     def matmul_single_batch(matrix_batch: jnp.ndarray, vector_batch: jnp.ndarray) -> jnp.ndarray:
         """
@@ -473,7 +511,7 @@ def simulate(
 
     # Project noise sources into the system and propagate through the signal matrix.
     noise_sources = vmap(matmul_single_batch, in_axes=(None, 0))(noise_matrix, noise_weights)
-    covariances = vmap(vmap(solve), in_axes=(None, 0))(signal_matrix[:, :, :-1], noise_sources)
+    covariances = vmap(vmap(solve), in_axes=(None, 0))(signal_system, noise_sources)
 
     # Convert propagated covariances into amplitude spectral density.
     temporary_sum = jnp.sum(jnp.real(covariances * jnp.conjugate(carrier_selections)), axis=2)
@@ -548,6 +586,21 @@ def run_build_step(
     simulation_arrays = {arg_names[i]: array for i, array in enumerate(all_arrays)}
     # [WS2] Static sparsity pattern => adjoint path in `simulate` ({} keeps the old path).
     simulation_arrays.update(adjoint.pattern_arrays(simulation_arrays))
+
+    # [WS3] Grouped component evaluation + pattern assembly (keyword-only `assembly`). {} keeps the old path.
+    # The adjoint consumes the plan's values on (signal_pattern_rows, signal_pattern_cols), so both patterns
+    # must be identical element by element; otherwise fall back to the original assembly.
+    assembly_plan = _assembly.assembly_arrays(simulation_arrays)
+    if assembly_plan and "signal_pattern_rows" in simulation_arrays:
+        same_pattern = np.array_equal(
+            np.asarray(assembly_plan["signal"]["rows"]), np.asarray(simulation_arrays["signal_pattern_rows"])
+        ) and np.array_equal(
+            np.asarray(assembly_plan["signal"]["cols"]), np.asarray(simulation_arrays["signal_pattern_cols"])
+        )
+        if not same_pattern:
+            assembly_plan = {}
+    if assembly_plan:
+        simulation_arrays["assembly"] = assembly_plan
 
     if timeit:
         for array in simulation_arrays.values():
