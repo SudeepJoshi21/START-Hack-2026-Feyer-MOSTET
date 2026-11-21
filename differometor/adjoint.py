@@ -68,7 +68,7 @@ def signal_pattern(signal_matrix, signal_matrix_indices) -> tuple[np.ndarray, np
     """
     base = np.asarray(signal_matrix)
     n = base.shape[0]
-    rows, cols = (np.asarray(x) for x in signal_matrix_indices)
+    rows, cols = np.asarray(signal_matrix_indices)                 # NumPy first: iterating a jax array compiles
     rows = np.mod(rows, n)                          # guard: negative rows would duplicate entries
     cols = np.mod(cols, n + 1)                      # -1 -> n (right-hand side column)
     in_matrix = cols < n
@@ -99,7 +99,7 @@ def pattern_arrays(simulation_arrays: dict) -> dict:
     n = signal_matrix.shape[0]
     if noise_matrix.shape != (n, n):
         return {}
-    q_rows, q_cols = (np.asarray(x) for x in simulation_arrays["noise_system_matrix_indices"])
+    q_rows, q_cols = np.asarray(simulation_arrays["noise_system_matrix_indices"])
     if q_rows.size and (q_rows.min() < 0 or q_cols.min() < 0):     # segment_sum needs plain indices
         return {}
     if np.unique(q_rows * n + q_cols).size != q_rows.size:
@@ -156,22 +156,63 @@ Cost: one sparse product + one triangular solve per frequency.
 """
 
 
+_SUPERLU = None
+
+
+def _superlu():
+    """
+    SciPy's compiled SuperLU core (`scipy.sparse.linalg._dsolve._superlu`), loaded on its own.
+
+    `scipy.sparse.linalg.splu` is a thin wrapper around `_superlu.gstrf`, but importing it executes the whole
+    `scipy.sparse` + `scipy.sparse.linalg` packages (~0.12 s on one CPU: ARPACK, iterative solvers, docstring parsing).
+    The extension only needs NumPy, so it is loaded from its file directly. Falls back to the normal import if the
+    file is not where SciPy 1.18 (pinned) puts it.
+    """
+    global _SUPERLU
+    if _SUPERLU is None:
+        try:
+            import importlib.machinery
+            import importlib.util
+            import os
+
+            folder = os.path.join(os.path.dirname(importlib.util.find_spec("scipy").origin), "sparse", "linalg", "_dsolve")
+            filename = next(f for f in os.listdir(folder) if f.startswith("_superlu.") and f.endswith((".so", ".pyd")))
+            loader = importlib.machinery.ExtensionFileLoader(
+                "scipy.sparse.linalg._dsolve._superlu", os.path.join(folder, filename)
+            )
+            module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+            loader.exec_module(module)
+            _SUPERLU = module
+        except Exception:  # pragma: no cover - unusual SciPy layout
+            from scipy.sparse.linalg._dsolve import _superlu as module
+
+            _SUPERLU = module
+    return _SUPERLU
+
+
 class _Refined:
-    """SuperLU factorisation of A plus the matrix itself, with refined solves for op(A) in {A, A^T, A^H}."""
+    """
+    SuperLU factorisation (COLAMD, the defaults of `scipy.sparse.linalg.splu`) of the CSC matrix (data, indices,
+    indptr), with refined solves for op(A) in {A, A^T, A^H}. The residual products use the pattern directly.
+    """
 
-    def __init__(self, matrix):
-        from scipy.sparse.linalg import splu
-
-        self.matrix = matrix
-        self.lu = splu(matrix, permc_spec="COLAMD")
+    def __init__(self, data, indices, indptr, columns):
+        n = indptr.shape[0] - 1
+        self.data, self.rows, self.columns, self.n = data, indices, columns, n
+        self.lu = _superlu().gstrf(
+            n, data.shape[0], data, indices, indptr,
+            csc_construct_func=_no_csc, ilu=False, options=dict(ColPerm="COLAMD"),
+        )
 
     def _apply(self, x, trans):
-        # A^T x = (x^T A)^T and A^H x = conj(A^T conj(x)): no transposed copies of A are built.
-        if trans == "N":
-            return self.matrix @ x
-        if trans == "T":
-            return (self.matrix.T @ x)
-        return np.conj(self.matrix.T @ np.conj(x))
+        if trans == "H":
+            return np.conj(self._apply(np.conj(x), "T"))
+        source, target = (self.columns, self.rows) if trans == "N" else (self.rows, self.columns)
+        if x.ndim == 2:
+            return np.stack([self._apply(x[:, j], trans) for j in range(x.shape[1])], axis=1)
+        terms = self.data * x[source]
+        return (np.bincount(target, terms.real, minlength=self.n)
+                + 1j * np.bincount(target, terms.imag, minlength=self.n))
 
     def solve(self, rhs, trans):
         x = self.lu.solve(rhs, trans=trans)
@@ -180,14 +221,19 @@ class _Refined:
         return x
 
 
+def _no_csc(*args, **kwargs):
+    raise NotImplementedError("L/U factors are not needed")
+
+
 def _host_factorisations(vals, rows, cols, n):
     """Yield one SuperLU factorisation per frequency (COLAMD ordering, as validated by WS1), with refined solves."""
-    from scipy.sparse import csc_matrix
-
     order, indices, indptr = _csc_structure(np.asarray(rows), np.asarray(cols), n)
+    indices, indptr = indices.astype(np.intc), indptr.astype(np.intc)
+    columns = np.repeat(np.arange(n), np.diff(indptr))
     vals = np.asarray(vals)
     for f in range(vals.shape[0]):
-        yield f, _Refined(csc_matrix((vals[f][order], indices, indptr), shape=(n, n)))
+        data = np.ascontiguousarray(vals[f][order], dtype=np.complex128)
+        yield f, _Refined(data, indices, indptr, columns)
 
 
 def _host_forward(vals, rows, cols, b, C):
