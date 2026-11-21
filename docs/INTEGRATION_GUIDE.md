@@ -141,3 +141,27 @@ Log every result as a row in `docs/FINDINGS.md` §4.
 Once assembly yields `values`/`b` per component type, one `custom_vjp` can cover **assembly + solve + noise**. Its backward is
 then a handful of vectorised per-type derivative formulas, so the gradient program (today ~12 s compile) should shrink to seconds.
 That needs WS3's per-type functions to expose their parameter derivatives (or `jax.vjp` of each small per-type function).
+
+## 7. Status of `ws3` / `ws4` (checked 2026-11-21, dry-run merges into `integration`, not committed)
+
+| Branch | What it does (from its own notes) | Dry-run conflicts with `integration` |
+|---|---|---|
+| `ws4` (`cc0c3c1`) | build without eager XLA compilations; lazy `plot` import (`__init__.py`, `build.py`) | `docs/FINDINGS.md` only (appended table rows: keep both) |
+| `ws3` (`8b4e878`) | `differometor/assembly.py`: grouped component evaluation (17 bodies instead of 57) + signal assembly directly on the pattern; keyword-only `assembly=None`; EPYC 101 f: **64.9 → 41.4 s**, compile 38.8 → 20.1 s | `differometor/simulate.py` (expected, §3) + `docs/FINDINGS.md` |
+
+WS3's own guide (`docs/WS3_INTEGRATION.md` on `ws3`, §3) describes the same combined design as §2.2 above:
+`assembly.signal_values_and_rhs → values (F, nnz), rhs (F, N) → adjoint.solve_signal_and_noise_weights`. Points to align during the merge:
+
+1. **One pattern, one order.** `values` must be aligned with the `rows`/`cols` passed to the adjoint. WS3's plan has its own
+   `plan["rows"]`, `plan["cols"]` (2,597 positions, the same *set* as `adjoint.signal_pattern`, but check the *order*). Either pass
+   `plan["rows"], plan["cols"]` to `solve_signal_and_noise_weights`, or assert at build time that they equal
+   `signal_pattern_rows/cols` element by element.
+2. **Noise values for the adjoint branch.** The adjoint path calls `simulate.component_outputs(...)` (values aligned with
+   `noise_system_matrix_indices`). With WS3's plan, use WS3's grouped evaluation for the noise calls, reordered to that
+   alignment with WS3's remapped output indices. Keep `noise_parameter_rows` (evaluate on 1 row when possible).
+3. **Remove the dense signal matrix entirely** in the combined path. WS3 standalone densifies once only because it still
+   uses dense LU (`assembly.densify`); with the adjoint, skip it.
+4. Merge **`ws4` first** (trivial), then **`ws3`**. Re-run §4, including `tests/test_assembly.py` and `tests/test_adjoint.py`.
+
+Rough expectation (estimate, not measured): WS3's compile (~20 s on EPYC) plus WS1/WS2's run (forward ~1–2 s,
+gradient ~1 s) plus setup (~1 s with WS4) gives **roughly 22–25 s first-run on EPYC**, against 64.9 s for the original.
