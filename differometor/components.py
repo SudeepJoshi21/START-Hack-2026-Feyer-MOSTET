@@ -1148,7 +1148,9 @@ def incidence_angle_left(alpha: float) -> jnp.ndarray:
     beamsplitter workspace convention in:
     finesse > components > modal > beamsplitter.pyx > BeamsplitterWorkspace
     """
-    return jnp.cos(jnp.radians(alpha))
+    # alpha is physically real; doing the trig in float64 instead of complex128
+    # avoids XLA's long complex-trig expansions (same values, fewer ops).
+    return jnp.cos(jnp.radians(jnp.real(alpha)))
 
 
 def incidence_angle_right(alpha: float, refractive_index_left: float, refractive_index_right: float) -> jnp.ndarray:
@@ -1180,9 +1182,10 @@ def incidence_angle_right(alpha: float, refractive_index_left: float, refractive
     Related documentation:
     https://finesse.ifosim.org/docs/latest/physics/plane-waves/beam_splitter.html#beamsplitter-phase
     """
-    return jnp.cos(
-        jnp.arcsin(refractive_index_left / refractive_index_right * jnp.sin(jnp.radians(alpha)))
-    )
+    # All inputs are physically real; do the trig in float64 (see incidence_angle_left).
+    alpha = jnp.real(alpha)
+    ratio = jnp.real(refractive_index_left) / jnp.real(refractive_index_right)
+    return jnp.cos(jnp.arcsin(ratio * jnp.sin(jnp.radians(alpha))))
 
 
 def phase_shift(tuning: float, frequency: float, refractive_index: float) -> jnp.ndarray:
