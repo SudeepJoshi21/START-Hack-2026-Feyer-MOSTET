@@ -25,7 +25,7 @@ complex-typed inputs `parameters` and `carrier_changing_values` therefore cover 
 physical parameter lives.
 
 `host_plan(...)` returns None (keep the JAX path) unless every precondition holds: WS3 assembly plan and WS2 pattern
-present, identity linking only, unique write positions, broadcast-compatible sweeps.
+present, identity or sqrt linking (see `_host_links`), unique write positions, broadcast-compatible sweeps.
 `ENABLED = False` forces the JAX path for A/B tests.
 """
 
@@ -55,11 +55,15 @@ Set to True before building to keep them, e.g. to compare the host path with the
 NOISE_FACTOR = UNIT_VACUUM * H_PLANCK * F0 * 0.25
 """noise = sqrt(2 * S * NOISE_FACTOR), exactly as in `simulate`."""
 
-REFINE = {"signal": False, "weights": True, "adjoint": True}
+REFINE = {"signal": True, "weights": True, "adjoint": True}
 """
-Which SuperLU solves get one step of iterative refinement (adjoint.REFINEMENT_STEPS). Measured against dense LU
-(the-prime-model-new): the noise weights (A^H) need it on Voyager (3.6e-3 without), the adjoint solves too (Voyager
-gradient 1.1e-4 without, 4e-13 with); the signal solve does not (Voyager 9.7e-10, uifo 4.8e-8 without).
+Which SuperLU solves get one step of iterative refinement (adjoint.REFINEMENT_STEPS). All of them.
+
+Measured against dense LU: the noise weights (A^H) need it on Voyager (3.6e-3 without), the adjoint solves too
+(Voyager gradient 1.1e-4 without, 4e-13 with). The signal solve was briefly left unrefined (benchmark workload 4.8e-8
+without), but scripts/scenarios.py found a setup where that is not enough: on the second trained UIFO (uifo_20_5000)
+the unrefined signal solve gives a sensitivity 1.6e-5 off at one frequency, where every refined solver and the
+original code agree to 1e-10. With refinement: 7.9e-10. Cost ~10 ms on the benchmark.
 """
 
 
@@ -363,16 +367,51 @@ def _unique(rows, cols, width) -> bool:
     return np.unique(flat).size == flat.size
 
 
+def _host_links():
+    """
+    Linking functions the host path supports: kind -> (callables recognised, value, derivative).
+
+    Setups link derived parameters with these, e.g. a laser amplitude = sqrt(power) (`setups.py`, amplitude and
+    signal modes). Any other callable keeps the JAX path. NumPy's sqrt is IEEE correctly rounded like XLA's.
+    """
+    from differometor.build import identity_link
+
+    return {
+        0: ((identity_link,), lambda x: x, lambda x: np.ones_like(x)),
+        1: ((jnp.sqrt, np.sqrt), np.sqrt, lambda x: 0.5 / np.sqrt(x)),
+    }
+
+
+def _apply_links(kinds: np.ndarray, x: np.ndarray, which: int) -> np.ndarray:
+    """Values (which=1) or derivatives (which=2) of the linking functions `kinds` at the inputs x."""
+    out = np.empty_like(x)
+    for kind, entry in _host_links().items():
+        mask = kinds == kind
+        if mask.any():
+            out[mask] = entry[which](x[mask])
+    return out
+
+
+def _link_kind(function) -> int | None:
+    for kind, (callables, _, _) in _host_links().items():
+        if any(function is c for c in callables):
+            return kind
+    return None
+
+
 def host_plan(a: dict) -> HostPlan | None:
     """Build the static host plan from `run_build_step`'s arrays, or None if a precondition fails."""
-    from differometor.build import LINKING_FUNCTIONS, identity_link
+    from differometor.build import LINKING_FUNCTIONS
 
     if not ENABLED or "assembly" not in a or "signal_pattern_rows" not in a:
         return None
     n = lambda key: np.asarray(a[key])  # noqa: E731
 
-    # Linking: only the identity used by setups without linked parameters.
-    if any(LINKING_FUNCTIONS[int(i)] is not identity_link for i in n("linking_function_indices").ravel()):
+    # Linking: functions with a host implementation only (identity, sqrt), each target written once.
+    link_kinds = [_link_kind(LINKING_FUNCTIONS[int(i)]) for i in n("linking_function_indices").ravel()]
+    if any(kind is None for kind in link_kinds):
+        return None
+    if np.unique(n("indices_to_link")).size != n("indices_to_link").size:
         return None
 
     plan = {}
@@ -410,6 +449,7 @@ def host_plan(a: dict) -> HostPlan | None:
         "optimized_value_indices": n("optimized_value_indices").astype(np.int64),
         "linked_indices": n("linked_indices").astype(np.int64),
         "indices_to_link": n("indices_to_link").astype(np.int64),
+        "link_kinds": np.asarray(link_kinds, dtype=np.int64),
         "qhd_parameter_indices": n("qhd_parameter_indices").astype(np.int64),
         "qhd_placing_indices": qhd,
         "carrier_changing_parameter_indices": carrier_changing,
@@ -451,7 +491,9 @@ def _forward(plan, optimized, parameters, carrier_values, signal_values):
     s = {}
     p = parameters.astype(np.complex128).copy()
     p[0, g["optimized_parameter_indices"]] = optimized[g["optimized_value_indices"]]
-    p[0, g["indices_to_link"]] = p[0, g["linked_indices"]]          # identity linking (checked at build)
+    link_inputs = p[0, g["linked_indices"]]                          # gather all inputs, then set (as simulate)
+    p[0, g["indices_to_link"]] = _apply_links(g["link_kinds"], link_inputs, 1)
+    s["link_inputs"] = link_inputs
     phase = np.exp(1j * (p[0, g["qhd_parameter_indices"]] * (np.pi / 180.0)))   # jnp.radians semantics
     s["p"], s["phase"] = p, phase
 
@@ -600,7 +642,14 @@ def _backward(plan, optimized, parameters, carrier_values, signal_values, carrie
     )
     to_link = p_bar[0, g["indices_to_link"]].copy()
     p_bar[0, g["indices_to_link"]] = 0
-    np.add.at(p_bar[0], g["linked_indices"], to_link)
+    derivative = _apply_links(g["link_kinds"], s["link_inputs"], 2)
+    if np.any(np.imag(derivative) != 0):
+        # p_bar holds the real part of JAX's (complex) parameter cotangent, which is all a real design variable
+        # needs. Through a link with a non-real derivative (e.g. sqrt of a negative power) the imaginary part
+        # would be needed too: refuse rather than return a wrong gradient.
+        raise ValueError("host path: linked parameter outside the real domain of its linking function "
+                         "(e.g. negative power); rebuild with differometor.host.ENABLED = False")
+    np.add.at(p_bar[0], g["linked_indices"], to_link * np.real(derivative))
     optimized_bar = np.zeros(optimized.shape, dtype=np.float64)
     np.add.at(optimized_bar, g["optimized_value_indices"], np.real(p_bar[0, g["optimized_parameter_indices"]]))
     p_bar[0, g["optimized_parameter_indices"]] = 0
