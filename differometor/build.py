@@ -38,6 +38,7 @@ or block-shift errors are difficult to debug in linearized optical simulations.
 """
 
 import numpy as np
+import jax
 import jax.numpy as jnp
 from differometor.setups import Setup
 from collections import defaultdict
@@ -89,6 +90,68 @@ Notes
 - This is module-level state. If you build multiple setups in the same process and rely on
   strict reproducibility of indices, you should reset this list before each build.
 """
+
+
+# ---------------------------------------------------------------------
+# Build-time helpers that avoid eager XLA compilations
+# ---------------------------------------------------------------------
+# Every distinct eager `jnp` operation compiles its own small XLA program (~5-20 ms each). The
+# build used to trigger ~60 of them (~1 s). The helpers below remove the ones that can be removed
+# without changing a single bit of the outputs.
+
+
+def _to_jax(value, dtype=None) -> jnp.ndarray:
+    """
+    `jnp.array(value, dtype=dtype)` without compiling anything.
+
+    `jnp.array` copies (and casts) on the device, which compiles one small XLA program per
+    distinct shape/dtype. Converting in NumPy and transferring with `jnp.asarray` gives the same
+    values, dtype and shape.
+    """
+    if dtype is not None:
+        dtype = jnp.dtype(jax.dtypes.canonicalize_dtype(dtype))
+    return jnp.asarray(np.asarray(value, dtype=dtype))
+
+
+@jax.jit
+def _space_entries(space_inputs: tuple) -> tuple:
+    """
+    `space(row)[0]` for every row, one jitted call instead of one eager evaluation per space.
+
+    space_inputs : tuple of (K, 3) arrays, one per dtype group, rows `[F, length, refractive_index]`
+        exactly as `space(jnp.array([F, length, refractive_index]))` receives them.
+
+    Bitwise identical to the eager calls: at build time the frequency is `F = 0`, so the phase
+    `-2*pi*i*F*L*n/c` is an exact (signed) zero and `-exp(phase)` is exactly `-1 +/- 0i`. Fusion
+    or vectorisation can therefore not change any bit. (The same is NOT true for the mirror and
+    beamsplitter coefficients: XLA fuses and FMA-contracts `left - right` phase terms, so those
+    stay eager in `build`.)
+    """
+    return tuple(jax.vmap(space)(group)[:, 0] for group in space_inputs)
+
+
+def _apply_space_entries(carrier_matrix: np.ndarray, space_writes: list) -> None:
+    """
+    Evaluate the recorded space entries in one call and write them in their original order.
+
+    space_writes : list of ((row, col), [F, length, refractive_index]).
+    Rows whose inputs are not all plain Python ints/floats use the original eager call.
+    """
+    batched = [k for k, (_, row) in enumerate(space_writes) if all(type(v) in (int, float) for v in row)]
+    # `jnp.array([F, length, refractive_index])` is int64 when all three are ints, else float64.
+    groups = {}
+    for k in batched:
+        groups.setdefault(all(type(v) is int for v in space_writes[k][1]), []).append(k)
+    keys = list(groups)
+    values = {}
+    if keys:
+        inputs = tuple(
+            np.asarray([space_writes[k][1] for k in groups[key]], dtype=np.int64 if key else np.float64) for key in keys
+        )
+        for key, group_values in zip(keys, _space_entries(inputs)):
+            values.update(zip(groups[key], np.asarray(group_values)))
+    for k, (position, row) in enumerate(space_writes):
+        carrier_matrix[position] = values[k] if k in values else space(jnp.array(row))[0]
 
 
 def set_instructions(
@@ -650,6 +713,10 @@ def build(setup: Setup):
     # Carrier matrix: identity on the left block, with a separate right-hand-side column.
     carrier_matrix = np.zeros((system_size, system_size + 1), dtype=complex)
     carrier_matrix[:, :system_size] = np.eye(system_size, dtype=complex)
+
+    # Space propagation entries are evaluated in one batched call after the edge loop
+    # (see `_apply_space_entries`); entries: ((row, col), [F, length, refractive_index]).
+    space_writes = []
 
     # Ensure signal_size is at least 1 to avoid conditional logic later.
     if signal_size == 0:
@@ -1285,9 +1352,10 @@ def build(setup: Setup):
             target_output_index = target_index
 
         # Initialize the carrier matrix with the space propagation entry.
-        space_entry = space(jnp.array([F, data["properties"]["length"], data["properties"]["refractive_index"]]))[0]
-        carrier_matrix[source_input_index, target_output_index] = space_entry
-        carrier_matrix[target_input_index, source_output_index] = space_entry
+        # (evaluated in one batched call after this loop, see `_apply_space_entries`)
+        space_inputs = [F, data["properties"]["length"], data["properties"]["refractive_index"]]
+        space_writes.append(((source_input_index, target_output_index), space_inputs))
+        space_writes.append(((target_input_index, source_output_index), space_inputs))
 
         parameter_position = parameter_positions[f"{source}_{target}"]
 
@@ -1369,6 +1437,9 @@ def build(setup: Setup):
                 carrier_column_indices=system_matrix_column_indices,
             )
 
+    # Evaluate all space entries in one batched call and write them (in the original order).
+    _apply_space_entries(carrier_matrix, space_writes)
+
     # Insert carrier matrix into both sideband blocks of the signal matrix.
     signal_matrix[:system_size, :system_size] = carrier_matrix[:, :system_size]
     signal_matrix[system_size:-signal_size, system_size:-signal_size - 1] = carrier_matrix[:, :system_size]
@@ -1421,22 +1492,22 @@ def build(setup: Setup):
     return (
         (carrier_instructions, signal_instructions, noise_instructions, signal_components, parameter_names),
         (
-            jnp.array([parameters], dtype=complex),
-            jnp.array(carrier_matrix),
-            jnp.array(signal_matrix),
-            jnp.array(noise_matrix, dtype=complex),
-            jnp.array(noise_selection_vectors, dtype=complex),
-            jnp.array(qhd_parameter_indices, dtype=int),
-            jnp.array(qhd_placing_indices, dtype=int),
-            jnp.array(linked_indices, dtype=int),
-            jnp.array(linking_function_indices, dtype=int),
-            jnp.array(indices_to_link, dtype=int),
+            _to_jax([parameters], dtype=complex),
+            _to_jax(carrier_matrix),
+            _to_jax(signal_matrix),
+            _to_jax(noise_matrix, dtype=complex),
+            _to_jax(noise_selection_vectors, dtype=complex),
+            _to_jax(qhd_parameter_indices, dtype=int),
+            _to_jax(qhd_placing_indices, dtype=int),
+            _to_jax(linked_indices, dtype=int),
+            _to_jax(linking_function_indices, dtype=int),
+            _to_jax(indices_to_link, dtype=int),
         ),
         (
-            jnp.array(detector_indices, dtype=int),
-            jnp.array(mirror_indices, dtype=int),
-            jnp.array(beamsplitter_indices, dtype=int),
-            jnp.array(isolator_indices, dtype=int),
+            _to_jax(detector_indices, dtype=int),
+            _to_jax(mirror_indices, dtype=int),
+            _to_jax(beamsplitter_indices, dtype=int),
+            _to_jax(isolator_indices, dtype=int),
             port_to_index,
         ),
     )
@@ -1634,10 +1705,10 @@ def pairs_to_arrays(
         if len(arrays["function_input_indices"]) == 0:
             # Dummy update that leaves matrices unchanged.
             return (
-                jnp.array([[0, 0, 0]]),
-                jnp.array([FUNCTIONS.index(dummy_function)]),
-                jnp.array([[0], [0]]),
-                jnp.array([[0], [0]]),
+                _to_jax([[0, 0, 0]]),
+                _to_jax([FUNCTIONS.index(dummy_function)]),
+                _to_jax([[0], [0]]),
+                _to_jax([[0], [0]]),
             )
 
         function_input_indices = np.vstack(arrays["function_input_indices"])
@@ -1656,27 +1727,27 @@ def pairs_to_arrays(
                 )
 
             return (
-                jnp.array(function_input_indices, dtype=int),
-                jnp.array(arrays["function_indices"], dtype=int),
-                jnp.array(output_indices, dtype=int),
-                jnp.array(system_matrix_indices, dtype=int),
-                jnp.array(carrier_solution_indices, dtype=int),
-                jnp.array(carrier_solution_placing_indices, dtype=int),
+                _to_jax(function_input_indices, dtype=int),
+                _to_jax(arrays["function_indices"], dtype=int),
+                _to_jax(output_indices, dtype=int),
+                _to_jax(system_matrix_indices, dtype=int),
+                _to_jax(carrier_solution_indices, dtype=int),
+                _to_jax(carrier_solution_placing_indices, dtype=int),
             )
 
         return (
-            jnp.array(function_input_indices, dtype=int),
-            jnp.array(arrays["function_indices"], dtype=int),
-            jnp.array(output_indices, dtype=int),
-            jnp.array(system_matrix_indices, dtype=int),
+            _to_jax(function_input_indices, dtype=int),
+            _to_jax(arrays["function_indices"], dtype=int),
+            _to_jax(output_indices, dtype=int),
+            _to_jax(system_matrix_indices, dtype=int),
         )
 
     return (
         (
-            jnp.array(optimized_parameter_indices, dtype=int),
-            jnp.array(optimization_value_indices, dtype=int),
-            jnp.array(carrier_changing_parameter_indices, dtype=int),
-            jnp.array(signal_changing_parameter_indices, dtype=int),
+            _to_jax(optimized_parameter_indices, dtype=int),
+            _to_jax(optimization_value_indices, dtype=int),
+            _to_jax(carrier_changing_parameter_indices, dtype=int),
+            _to_jax(signal_changing_parameter_indices, dtype=int),
         ),
         combine_arrays(carrier_arrays),
         combine_arrays(signal_arrays, signal=True),
@@ -1729,26 +1800,37 @@ def prepare_arrays(
         or if `changing_values` has an incompatible shape.
     """
     optimized_parameters = None
+    # Index on the host: eager JAX gathers/reshapes/copies each compile a small XLA program.
+    host_parameters = np.asarray(parameters)
 
     # Ensure at least one optimized parameter index exists, using a dummy identity update if needed.
     if len(optimized_parameter_indices) == 0:
-        optimized_parameter_indices = jnp.array([0])
-        optimized_parameters = jnp.array(parameters[0][optimized_parameter_indices])
-        optimized_value_indices = jnp.array([0])
+        optimized_parameter_indices = _to_jax([0])
+        optimized_parameters = _to_jax(host_parameters[0][[0]])
+        optimized_value_indices = _to_jax([0])
 
     # Normalize changing_values to shape (V, R) if provided.
     if changing_values is not None:
-        if len(changing_values.shape) == 1:
-            changing_values = changing_values.reshape(1, -1)
-        signal_changing_values = changing_values.copy()
+        if isinstance(changing_values, jax.Array) and not changing_values.weak_type:
+            # Same values, dtype and shape as `reshape` + `copy` on the device (JAX arrays are
+            # immutable, so the carrier and signal entries may share one array).
+            host_values = np.asarray(changing_values)
+            if host_values.ndim == 1:
+                host_values = host_values.reshape(1, -1)
+            changing_values = jnp.asarray(host_values)
+            signal_changing_values = changing_values
+        else:
+            if len(changing_values.shape) == 1:
+                changing_values = changing_values.reshape(1, -1)
+            signal_changing_values = changing_values.copy()
 
     if len(carrier_changing_parameter_indices) != 0 and len(signal_changing_parameter_indices) != 0:
         raise ValueError("This combination of changing component-parameter pairs is not supported yet.")
 
     # Carrier changing defaults.
     if len(carrier_changing_parameter_indices) == 0:
-        carrier_changing_parameter_indices = jnp.array([0])
-        carrier_changing_values = jnp.array([parameters[0][carrier_changing_parameter_indices]])
+        carrier_changing_parameter_indices = _to_jax([0])
+        carrier_changing_values = _to_jax([host_parameters[0][[0]]])
     else:
         carrier_changing_values = changing_values
         if carrier_changing_values.shape[0] != len(carrier_changing_parameter_indices):
@@ -1763,8 +1845,8 @@ def prepare_arrays(
 
     # Signal changing defaults.
     if len(signal_changing_parameter_indices) == 0:
-        signal_changing_parameter_indices = jnp.array([0])
-        signal_changing_values = jnp.array([parameters[0][signal_changing_parameter_indices]])
+        signal_changing_parameter_indices = _to_jax([0])
+        signal_changing_values = _to_jax([host_parameters[0][[0]]])
 
     return (
         optimized_parameters,
