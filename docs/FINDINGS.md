@@ -97,6 +97,38 @@ Same code (`ws2-adjoint`), laptop, 1 CPU, 4 freqs, `scripts/profile_stages.py`, 
   no flags, and its report records `XLA_FLAGS`). That is the plan's open question: **ask Feyer before relying on it.**
 - `exec_time_optimization_effort` alone does nothing measurable.
 
+### 1.8 What the compiled programs consist of (merged `main`, 101 freqs, laptop, 1 CPU)
+`benchmark.py` times `jax.jit(f).lower(...)` (trace Python → jaxpr → StableHLO) and `.compile()` (XLA passes: simplification,
+fusion, layout, then LLVM codegen) for 3 programs. On 1 CPU XLA compiles single-threaded, and the persistent cache is off.
+
+| Program | lower | compile | StableHLO ops in | optimised HLO out | fusions | custom calls |
+|---|---:|---:|---:|---:|---:|---:|
+| forward (`jax.vjp(simulate)`, returns tape) | 1.8 s | 19.9 s | 3,312 | 14,642 | 551 | 4 (LAPACK carrier solve, SuperLU callback) |
+| sensitivity | 0.1 s | 0.8 s | 56 | 208 | 13 | 0 |
+| gradient (backward) | 0.5 s | 5.3 s | 1,539 | 2,650 | 101 | 3 |
+
+Forward-program ops by source function (StableHLO, innermost `differometor` frame, from `lower().as_text(debug_info=True)`):
+`incidence_angle_right` **889 (26.8 %)**, `incidence_angle_left` **413 (12.5 %)**, `standardize_output` 203 (6.1 %),
+`space_modulation` 190, `simulate` 173, `assembly.component_outputs` 137, `phase_shift` 100, `expand_parameters` 97,
+`surface` 88, `solve` (carrier) 82. Top lines: `components.py:1184` (`arcsin(n_l/n_r·sin(α))`) 490 ops, `:1151`
+(`cos(radians(α))`) 413, `:1183` (`cos(...)`) 399.
+
+**Cause:** the parameter vector is `complex128`, so the geometry helpers do *complex* `cos`/`sin`/`arcsin` (expanded by XLA into long
+formulas), and they are called from 8 places (surface reflectivity/transmissivity, forces, optomechanical phases), traced once per
+component group.
+
+**Experiment (not committed):** doing that trig in float64 (`jnp.real` of angle and refractive indices, which are physically real):
+
+| | forward ops | forward compile (2 runs) | gradient lower+compile |
+|---|---:|---:|---:|
+| complex (current) | 3,369 | 20.4 / 20.2 s | 5.9 / 6.6 s |
+| real | **2,256 (−33 %)** | **15.8 / 15.5 s (−4.7 s)** | 5.5 / 5.9 s |
+
+Sensitivity and all 193 gradients **bit-identical** (0 difference). **≈ −5 s on the 28.8 s total.** Same idea applies to other trig/exp
+on physically real inputs (`phase_shift`, `space_modulation`, `standardize_output`'s list→array). Owner: WS3 (`components.py`).
+Gradient caveat: `jnp.real` drops the imaginary cotangent, which is correct only because these inputs are real parameters
+(optimised parameters are float64 inserted into the complex vector). Validate with `bench.py check` when implementing.
+
 ## 2. Correction to my earlier notes
 - Noise matrix `Q`: **66 component-function calls producing 272 non-zeros** (the plan's number is right;
   I had written "66 non-zeros").
