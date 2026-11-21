@@ -25,6 +25,7 @@ from jax import lax, vmap, jit
 from differometor.setups import Setup
 from differometor.build import build, pairs_to_arrays, prepare_arrays, LINKING_FUNCTIONS
 from differometor.components import FUNCTIONS, UNIT_VACUUM, H_PLANCK, F0
+from differometor import assembly as _assembly
 
 
 jax.config.update("jax_enable_x64", True)
@@ -186,6 +187,8 @@ def simulate(
     noise_function_indices: jnp.ndarray,
     noise_output_indices: tuple[jnp.ndarray, jnp.ndarray],
     noise_system_matrix_indices: tuple[jnp.ndarray, jnp.ndarray],
+    *,
+    assembly: dict | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Run one full simulation pass: carrier, signal, and quantum noise.
@@ -251,6 +254,11 @@ def simulate(
     noise_system_matrix_indices :
         Indexing and function-selection arrays used by `update` to fill the noise matrix.
 
+    assembly : dict | None
+        Keyword-only. Build-time plan from `assembly.assembly_arrays` (added by `run_build_step`). When given,
+        component functions are evaluated grouped by type instead of through `vmap(lax.switch)`, and the
+        signal system is assembled on its sparsity pattern. When None, the original code runs.
+
     Returns
     -------
     carrier : jnp.ndarray
@@ -286,53 +294,71 @@ def simulate(
     # --------------------
     # Carrier solve
     # --------------------
+    use_assembly = bool(assembly)  # static: depends only on the pytree structure
+
     parameters = expand_parameters(parameters, carrier_changing_parameter_indices, carrier_changing_values)
-    carrier_matrix = vmap(update, in_axes=(0, None, None, None, None, None))(
-        parameters,
-        carrier_matrix,
-        carrier_function_input_indices,
-        carrier_output_indices,
-        carrier_matrix_indices,
-        carrier_function_indices,
-    )
+    if use_assembly:
+        carrier_matrix = vmap(_assembly.update, in_axes=(0, None, None, None))(
+            parameters, carrier_matrix, assembly["carrier"], carrier_matrix_indices
+        )
+    else:
+        carrier_matrix = vmap(update, in_axes=(0, None, None, None, None, None))(
+            parameters,
+            carrier_matrix,
+            carrier_function_input_indices,
+            carrier_output_indices,
+            carrier_matrix_indices,
+            carrier_function_indices,
+        )
     carrier = vmap(solve)(carrier_matrix[:, :, :-1], carrier_matrix[:, :, -1])
 
     # --------------------
     # Signal solve
     # --------------------
     parameters = expand_parameters(parameters, signal_changing_parameter_indices, signal_changing_values)
-    signal_matrix = vmap(update, in_axes=(0, None, None, None, None, None))(
-        parameters,
-        signal_matrix,
-        signal_function_input_indices,
-        signal_output_indices,
-        signal_matrix_indices,
-        signal_function_indices,
-    )
+    if use_assembly:
+        # Same matrix as the branch below (base -> component outputs -> carrier scaling -> conjugated blocks),
+        # computed only on the sparsity pattern. See `assembly.signal_values_and_rhs`.
+        signal_size = signal_matrix.shape[0]
+        signal_values, signal_rhs = _assembly.signal_values_and_rhs(
+            parameters, carrier, assembly["signal"], signal_size
+        )
+        signal_system = _assembly.densify(signal_values, assembly["signal"], signal_size)
+    else:
+        signal_matrix = vmap(update, in_axes=(0, None, None, None, None, None))(
+            parameters,
+            signal_matrix,
+            signal_function_input_indices,
+            signal_output_indices,
+            signal_matrix_indices,
+            signal_function_indices,
+        )
 
-    # Scale signal connector entries by the carrier solution at the respective spaces.
-    # The minus sign matches the sign convention used by the referenced modeling tools.
-    signal_entries = (
-        -signal_matrix[:, signal_carrier_placing_indices[0], signal_carrier_placing_indices[1]]
-        * carrier[:, signal_carrier_indices.flatten()]
-    )
-    signal_matrix = signal_matrix.at[:, signal_carrier_placing_indices[0], signal_carrier_placing_indices[1]].set(
-        signal_entries
-    )
+        # Scale signal connector entries by the carrier solution at the respective spaces.
+        # The minus sign matches the sign convention used by the referenced modeling tools.
+        signal_entries = (
+            -signal_matrix[:, signal_carrier_placing_indices[0], signal_carrier_placing_indices[1]]
+            * carrier[:, signal_carrier_indices.flatten()]
+        )
+        signal_matrix = signal_matrix.at[:, signal_carrier_placing_indices[0], signal_carrier_placing_indices[1]].set(
+            signal_entries
+        )
 
-    # Apply conjugation rules to enforce upper and lower sideband symmetry.
-    carrier_size = carrier.shape[1]
-    signal_matrix = signal_matrix.at[:, carrier_size : carrier_size * 2, carrier_size : carrier_size * 2].set(
-        jnp.conjugate(signal_matrix[:, carrier_size : carrier_size * 2, carrier_size : carrier_size * 2])
-    )
-    signal_matrix = signal_matrix.at[:, carrier_size * 2 :, :carrier_size].set(
-        jnp.conjugate(signal_matrix[:, carrier_size * 2 :, :carrier_size])
-    )
-    signal_matrix = signal_matrix.at[:, carrier_size : carrier_size * 2, carrier_size * 2 :].set(
-        jnp.conjugate(signal_matrix[:, carrier_size : carrier_size * 2, carrier_size * 2 :])
-    )
+        # Apply conjugation rules to enforce upper and lower sideband symmetry.
+        carrier_size = carrier.shape[1]
+        signal_matrix = signal_matrix.at[:, carrier_size : carrier_size * 2, carrier_size : carrier_size * 2].set(
+            jnp.conjugate(signal_matrix[:, carrier_size : carrier_size * 2, carrier_size : carrier_size * 2])
+        )
+        signal_matrix = signal_matrix.at[:, carrier_size * 2 :, :carrier_size].set(
+            jnp.conjugate(signal_matrix[:, carrier_size * 2 :, :carrier_size])
+        )
+        signal_matrix = signal_matrix.at[:, carrier_size : carrier_size * 2, carrier_size * 2 :].set(
+            jnp.conjugate(signal_matrix[:, carrier_size : carrier_size * 2, carrier_size * 2 :])
+        )
+        signal_system = signal_matrix[:, :, :-1]
+        signal_rhs = signal_matrix[:, :, -1]
 
-    signal = vmap(solve)(signal_matrix[:, :, :-1], signal_matrix[:, :, -1])
+    signal = vmap(solve)(signal_system, signal_rhs)
 
     # --------------------
     # Quantum noise solve
@@ -367,7 +393,7 @@ def simulate(
     ].set(lower_carrier_selections)
 
     # Back-propagate detector weights by solving the transposed conjugated signal system.
-    transposed_conjugated_signal_matrix = jnp.transpose(jnp.conjugate(signal_matrix[:, :, :-1]), (0, 2, 1))
+    transposed_conjugated_signal_matrix = jnp.transpose(jnp.conjugate(signal_system), (0, 2, 1))
     carrier_selections = jnp.broadcast_to(
         carrier_selections,
         (carrier_selections.shape[0], transposed_conjugated_signal_matrix.shape[0], carrier_selections.shape[2]),
@@ -375,14 +401,19 @@ def simulate(
     noise_weights = vmap(vmap(solve), in_axes=(None, 0))(transposed_conjugated_signal_matrix, carrier_selections)
 
     # Update noise source matrix (may depend on current parameters).
-    noise_matrix = vmap(update, in_axes=(0, None, None, None, None, None))(
-        parameters,
-        noise_matrix,
-        noise_function_input_indices,
-        noise_output_indices,
-        noise_system_matrix_indices,
-        noise_function_indices,
-    )
+    if use_assembly:
+        noise_matrix = vmap(_assembly.update, in_axes=(0, None, None, None))(
+            parameters, noise_matrix, assembly["noise"], noise_system_matrix_indices
+        )
+    else:
+        noise_matrix = vmap(update, in_axes=(0, None, None, None, None, None))(
+            parameters,
+            noise_matrix,
+            noise_function_input_indices,
+            noise_output_indices,
+            noise_system_matrix_indices,
+            noise_function_indices,
+        )
 
     def matmul_single_batch(matrix_batch: jnp.ndarray, vector_batch: jnp.ndarray) -> jnp.ndarray:
         """
@@ -404,7 +435,7 @@ def simulate(
 
     # Project noise sources into the system and propagate through the signal matrix.
     noise_sources = vmap(matmul_single_batch, in_axes=(None, 0))(noise_matrix, noise_weights)
-    covariances = vmap(vmap(solve), in_axes=(None, 0))(signal_matrix[:, :, :-1], noise_sources)
+    covariances = vmap(vmap(solve), in_axes=(None, 0))(signal_system, noise_sources)
 
     # Convert propagated covariances into amplitude spectral density.
     temporary_sum = jnp.sum(jnp.real(covariances * jnp.conjugate(carrier_selections)), axis=2)
@@ -477,6 +508,12 @@ def run_build_step(
         )
 
     simulation_arrays = {arg_names[i]: array for i, array in enumerate(all_arrays)}
+
+    # WS3: grouped component evaluation and pattern assembly (keyword-only `assembly` argument of `simulate`).
+    # Empty when a precondition fails, in which case `simulate` runs the original code.
+    assembly_plan = _assembly.assembly_arrays(simulation_arrays)
+    if assembly_plan:
+        simulation_arrays["assembly"] = assembly_plan
 
     if timeit:
         for array in simulation_arrays.values():
