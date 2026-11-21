@@ -3,6 +3,7 @@ Generalisation / anti-overfitting checks for the host path (the-prime-model-new)
 
 Run:  PYTHONPATH=. python tests/test_robustness.py      (a few minutes on one CPU)
 
+0. Branch cuts of the NumPy shim (sqrt, arcsin, log10) match jax.numpy, signed zeros included (edge-cases bundle).
 1. Input-slot detection (`host._used_slots`) is structural: for every component function it covers every slot with a
    non-zero derivative at random inputs unrelated to any setup.
 2. The forward-state cache (`host._LAST_FORWARD`) never leaks between inputs: interleaved forward/backward calls for
@@ -44,6 +45,21 @@ def test_used_slots_structural():
         numeric = set(np.flatnonzero(np.any((jac != 0) | ~np.isfinite(jac), axis=(0, 1))).tolist())
         assert numeric <= slots, f"{FUNCTIONS[t].__name__}: derivative w.r.t. {numeric - slots} missed"
     print("PASS test_used_slots_structural:", {FUNCTIONS[t].__name__: v.tolist() for t, v in host._USED_SLOTS.items()})
+
+
+def test_branch_cuts_match_jax():
+    """Shim functions with branch cuts (sqrt, arcsin, log10) follow jax.numpy's conventions, signed zeros included."""
+    shim = host._SHIM
+    z = np.array([-4 + 0j, complex(-4, -0.0), complex(-1.025, -0.0), complex(1.025, -0.0), complex(1.5, -0.0),
+                  complex(-1.025, 0.0), 0.3 - 0.2j, complex(2.0, -0.0)])
+    for name in ("sqrt", "arcsin", "log10"):
+        ours = np.asarray(getattr(shim, name)(z))
+        theirs = np.asarray(getattr(jnp, name)(jnp.asarray(z)))
+        assert np.allclose(ours, theirs, rtol=1e-14, atol=1e-15), f"{name}: {ours} vs {theirs}"
+        d_ours = getattr(shim, name)(host.Dual(z, np.ones((1,) + z.shape, complex))).d[0]
+        d_theirs = np.asarray([complex(jax.jvp(getattr(jnp, name), (jnp.asarray(v),), (jnp.asarray(1.0 + 0j),))[1]) for v in z])
+        assert np.allclose(d_ours, d_theirs, rtol=1e-12, atol=1e-15), f"d {name}: {d_ours} vs {d_theirs}"
+    print("PASS test_branch_cuts_match_jax (sqrt, arcsin, log10 values and derivatives, signed zeros)")
 
 
 def _workload():
@@ -142,6 +158,7 @@ def test_process_history_does_not_matter():
 
 if __name__ == "__main__":
     test_used_slots_structural()
+    test_branch_cuts_match_jax()
     test_forward_cache_does_not_leak()
     test_gradient_finite_differences_off_benchmark_point()
     test_process_history_does_not_matter()

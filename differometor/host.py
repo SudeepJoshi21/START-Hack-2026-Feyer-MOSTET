@@ -205,9 +205,14 @@ _SHIM = types.SimpleNamespace(
     cos=_unary(np.cos, lambda v: -np.sin(v)),
     sinh=_unary(np.sinh, np.cosh),
     cosh=_unary(np.cosh, np.sinh),
-    sqrt=_unary(np.sqrt, lambda v: 0.5 / np.sqrt(v)),
+    # Branch cuts must follow jax.numpy, not C99/NumPy: on the cut, JAX's complex sqrt and arcsin ignore the sign of
+    # a zero imaginary part (treat -0.0 as +0.0), while NumPy honours it. Example (edge-cases bundle, edge_tir225):
+    # cos(arcsin(1.45 sin(225 deg))) has argument -1.025 - 0j; NumPy gives -0.226j, JAX +0.226j (the other total-
+    # internal-reflection branch; carrier 12x off). `v + 0.0` turns -0.0 into +0.0 and changes nothing else.
+    # log10 honours the sign in both libraries and stays as is.
+    sqrt=_unary(lambda v: np.sqrt(v + 0.0), lambda v: 0.5 / np.sqrt(v + 0.0)),
     log10=_unary(np.log10, lambda v: 1.0 / (v * np.log(10.0))),
-    arcsin=_unary(np.arcsin, lambda v: 1.0 / np.sqrt(1.0 - v * v)),
+    arcsin=_unary(lambda v: np.arcsin(v + 0.0), lambda v: 1.0 / np.sqrt(1.0 - (v + 0.0) * (v + 0.0))),
     radians=_unary(lambda v: v * (np.pi / 180.0), lambda v: np.full(np.shape(v), np.pi / 180.0)),  # as jnp.radians; np.radians rejects complex
     abs=_abs,
     conj=_conj,
@@ -408,7 +413,7 @@ def _host_links():
 
     return {
         0: ((identity_link,), lambda x: x, lambda x: np.ones_like(x)),
-        1: ((jnp.sqrt, np.sqrt), np.sqrt, lambda x: 0.5 / np.sqrt(x)),
+        1: ((jnp.sqrt, np.sqrt), lambda x: np.sqrt(x + 0.0), lambda x: 0.5 / np.sqrt(x + 0.0)),   # jnp.sqrt branch convention (see _SHIM)
     }
 
 

@@ -38,13 +38,16 @@ CHUNKS = 4   # such references are computed in CHUNKS equal frequency chunks
 # initial optimized values or None, reference sensitivity or None).
 # ---------------------------------------------------------------------------------------
 
-def _uifo_fixture(name, freqs=None, perturb=None, seed=0, fmin=None, fmax=None):
+def _uifo_fixture(name, freqs=None, perturb=None, seed=0, fmin=None, fmax=None, edits=None):
     import numpy as np
     import differometor as df
     from differometor.setups import constrain_inter_grid_cell_spaces
 
     data = ROOT / "examples" / "data"
     fixture = json.loads((data / f"uifo_{name}.json").read_text())
+    for kind, changes in (edits or {}).items():          # {"edges"/"nodes": {component: {property: value}}}
+        for component, properties in changes.items():
+            fixture[kind][component]["properties"].update(properties)
     setup = df.Setup.from_data(fixture)
     pairs = constrain_inter_grid_cell_spaces(setup.parameters, PROPERTIES)
     components = fixture["nodes"] | fixture["edges"]
@@ -60,6 +63,8 @@ def _uifo_fixture(name, freqs=None, perturb=None, seed=0, fmin=None, fmax=None):
     else:
         lo, hi = (fmin, fmax) if fmin else map(float, name.split("_"))
         frequencies = np.logspace(np.log10(lo), np.log10(hi), freqs or 101)
+    if edits:
+        reference = None                                     # modified setup: the public reference does not apply
     if perturb:
         rng = np.random.default_rng(seed)
         values = values * (1 + perturb * rng.uniform(-1, 1, values.shape))
@@ -110,6 +115,14 @@ def _cavity():
     return s, [("m0", "tuning")], np.linspace(-180, 180, 400), pairs, None, None
 
 
+def _GLASS(n, alpha=None):
+    """Edits of the edge-cases bundle: refractive index n on center12_ml12 / center12_mt12, optional center12 alpha."""
+    edits = {"edges": {space: {"refractive_index": n} for space in ("center12_ml12", "center12_mt12")}}
+    if alpha is not None:
+        edits["nodes"] = {"center12": {"alpha": alpha}}
+    return edits
+
+
 def _scenarios():
     from differometor.setups import aligo, voyager
 
@@ -130,6 +143,11 @@ def _scenarios():
         "aligo-ampl": ("aLIGO, amplitude modulation (sqrt-linked amplitude)", lambda: _predefined(aligo, mode="amplitude_modulation")),
         "aligo": ("aLIGO, public test frequencies", _aligo_test),
         "cavity-tuning": ("Fabry-Perot cavity, carrier sweep over 400 tunings", _cavity),
+        # edge cases (edge-cases bundle): glass on the right/bottom spaces of the 45-deg beamsplitter center12
+        "edge-tir45": ("UIFO 800-3000, n=1.45 at center12: total internal reflection (arcsin arg +1.025)", lambda: _uifo_fixture("800_3000", edits=_GLASS(1.45))),
+        "edge-tir135": ("same, center12 alpha=135 deg", lambda: _uifo_fixture("800_3000", edits=_GLASS(1.45, 135.0))),
+        "edge-tir225": ("same, center12 alpha=225 deg: opposite TIR branch (arcsin arg -1.025 - 0j)", lambda: _uifo_fixture("800_3000", edits=_GLASS(1.45, 225.0))),
+        "edge-glass-n12": ("UIFO 800-3000, n=1.2 at center12: refraction without TIR", lambda: _uifo_fixture("800_3000", edits=_GLASS(1.2))),
     }
 
 
