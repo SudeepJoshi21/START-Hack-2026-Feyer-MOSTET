@@ -45,6 +45,13 @@ from differometor.components import UNIT_VACUUM, H_PLANCK, F0
 
 ENABLED = True
 
+JAX_PATH_ARRAYS = False
+"""
+When a host plan is built, `run_build_step` leaves out the WS2 pattern and WS3 assembly arrays (they only serve the JAX
+path; with `ENABLED = False` or without `host_plan` the JAX path then runs the original assembly and dense solve).
+Set to True before building to keep them, e.g. to compare the host path with the WS2/WS3 JAX path.
+"""
+
 NOISE_FACTOR = UNIT_VACUUM * H_PLANCK * F0 * 0.25
 """noise = sqrt(2 * S * NOISE_FACTOR), exactly as in `simulate`."""
 
@@ -62,8 +69,12 @@ gradient 1.1e-4 without, 4e-13 with); the signal solve does not (Voyager 9.7e-10
 
 class Dual:
     """
-    Value `v` (shape S) and tangent `d` (shape S + (T,)) along T real input directions.
-    Only the operations the component functions use are implemented.
+    Value `v` (shape S) and tangent `d` (shape (T,) + S', S' broadcastable to S with len(S') == len(S)) along T real
+    input directions. Only the operations the component functions use are implemented.
+
+    The direction axis leads (the-prime-model-new): coefficient arrays of shape S then broadcast over it with
+    contiguous inner loops of length n, instead of strided inner loops of length T <= 7 with the axis last.
+    The per-element arithmetic is unchanged, so Jacobians are bitwise identical.
     """
 
     __slots__ = ("v", "d")
@@ -73,10 +84,17 @@ class Dual:
         self.v, self.d = v, d
 
     def __getitem__(self, index):
-        return Dual(self.v[index], self.d[index])
+        index = index if isinstance(index, tuple) else (index,)
+        d = self.d if self.d.shape[1:] == self.v.shape else np.broadcast_to(self.d, self.d.shape[:1] + self.v.shape)
+        return Dual(self.v[index], d[(slice(None),) + index])
+
+    def _aligned(self, ndim):
+        """Tangent with leading singleton axes inserted after T so that it lines up with a result of rank `ndim`."""
+        missing = ndim - self.v.ndim
+        return self.d if missing == 0 else self.d.reshape(self.d.shape[:1] + (1,) * missing + self.d.shape[1:])
 
     def _tangent(self, shape):
-        return self.d if self.v.shape == shape else np.broadcast_to(self.d, shape + self.d.shape[-1:])
+        return np.broadcast_to(self._aligned(len(shape)), self.d.shape[:1] + tuple(shape))
 
     def __neg__(self):
         return Dual(-self.v, -self.d)
@@ -84,9 +102,9 @@ class Dual:
     def __add__(self, other):
         if isinstance(other, Dual):
             v = self.v + other.v
-            return Dual(v, self._tangent(v.shape) + other._tangent(v.shape))
+            return Dual(v, self._aligned(v.ndim) + other._aligned(v.ndim))
         v = self.v + other
-        return Dual(v, self._tangent(np.shape(v)))
+        return Dual(v, self._aligned(np.ndim(v)))
 
     __radd__ = __add__
 
@@ -99,33 +117,35 @@ class Dual:
     def __mul__(self, other):
         if isinstance(other, Dual):
             v = self.v * other.v
-            return Dual(v, self.d * other.v[..., None] + other.d * self.v[..., None])
+            return Dual(v, self._aligned(v.ndim) * other.v + other._aligned(v.ndim) * self.v)
         other = np.asarray(other)
-        return Dual(self.v * other, self.d * other[..., None])
+        v = self.v * other
+        return Dual(v, self._aligned(v.ndim) * other)
 
     __rmul__ = __mul__
 
     def __truediv__(self, other):
         if isinstance(other, Dual):
             v = self.v / other.v
-            return Dual(v, (self.d - v[..., None] * other.d) / other.v[..., None])
+            return Dual(v, (self._aligned(v.ndim) - v * other._aligned(v.ndim)) / other.v)
         other = np.asarray(other)
-        return Dual(self.v / other, self.d / other[..., None])
+        v = self.v / other
+        return Dual(v, self._aligned(v.ndim) / other)
 
     def __rtruediv__(self, other):
         v = other / self.v
-        return Dual(v, -(v / self.v)[..., None] * self.d)
+        return Dual(v, -(v / self.v) * self._aligned(v.ndim))
 
     def __pow__(self, exponent):
         if isinstance(exponent, Dual):
             raise NotImplementedError("Dual ** Dual is not used by the component functions")
-        return Dual(self.v**exponent, (exponent * self.v ** (exponent - 1))[..., None] * self.d)
+        return Dual(self.v**exponent, (exponent * self.v ** (exponent - 1)) * self.d)
 
 
 def _unary(function, derivative):
     def apply(x):
         if isinstance(x, Dual):
-            return Dual(function(x.v), derivative(x.v)[..., None] * x.d)
+            return Dual(function(x.v), derivative(x.v) * x.d)
         return function(x)
 
     return apply
@@ -136,8 +156,8 @@ def _abs(x):
         return np.abs(x)
     a = np.abs(x.v)
     if np.iscomplexobj(x.v):
-        return Dual(a, np.real(np.conj(x.v)[..., None] * x.d) / a[..., None])
-    return Dual(a, np.sign(x.v)[..., None] * x.d)
+        return Dual(a, np.real(np.conj(x.v) * x.d) / a)
+    return Dual(a, np.sign(x.v) * x.d)
 
 
 def _conj(x):
@@ -155,9 +175,9 @@ def _array(values, dtype=None):
         value = value.astype(dtype)
     if not duals:
         return value
-    tangents = duals[0].d.shape[-1]
-    zero = np.zeros(shape + (tangents,), dtype=duals[0].d.dtype)
-    tangent = np.stack([x._tangent(shape) if isinstance(x, Dual) else zero for x in values])
+    tangents = duals[0].d.shape[0]
+    zero = np.zeros((tangents,) + shape, dtype=duals[0].d.dtype)
+    tangent = np.stack([x._tangent(shape) if isinstance(x, Dual) else zero for x in values], axis=1)
     if dtype is not None:
         tangent = tangent.astype(dtype)
     return Dual(value, tangent)
@@ -216,13 +236,14 @@ def _jacobian(function, inputs: np.ndarray, slots=None) -> np.ndarray:
     """
     count, n = inputs.shape
     slots = np.arange(count) if slots is None else slots
-    seed = np.zeros((count, n, slots.size), dtype=np.complex128)
-    seed[slots, :, np.arange(slots.size)] = 1.0
+    seed = np.zeros((slots.size, count, n), dtype=np.complex128)
+    seed[np.arange(slots.size), slots, :] = 1.0
     out = function(Dual(inputs, seed))
     if not isinstance(out, Dual):  # constant output
         return np.zeros((n, 4, slots.size), dtype=np.complex128)
-    tangent = np.broadcast_to(out.d, (4, n, slots.size)) if out.d.ndim == 3 else out.d
-    return np.transpose(tangent, (1, 0, 2)).astype(np.complex128)
+    tangent = np.broadcast_to(out._aligned(2), (slots.size, 4, n))                 # (U, 4, n)
+    # same values and memory order (4, n, U) as with the direction axis last, viewed as (n, 4, U)
+    return np.ascontiguousarray(np.transpose(tangent, (1, 2, 0)), dtype=np.complex128).transpose(1, 0, 2)
 
 
 _USED_SLOTS = {}
@@ -474,13 +495,10 @@ def _forward(plan, optimized, parameters, carrier_values, signal_values):
     s["c_rows"], s["rhs"] = c_rows, rhs
 
     # one SuperLU factorisation per frequency (WS1), kept in the state for the backward pass
-    factors = [lu for _, lu in _adjoint._host_factorisations(values, sp["rows"], sp["cols"], size)]
-    x = np.empty((r, size), dtype=np.complex128)
-    w = np.empty(c_rows.shape, dtype=np.complex128)
-    for f, lu in enumerate(factors):
-        x[f] = lu.solve(rhs[f], "N", REFINE["signal"])                # A x = b
-        if c_rows.shape[1]:
-            w[f] = lu.solve(c_rows[f].T.copy(), "H", REFINE["weights"]).T   # A^H w_d = c_d
+    factors = _adjoint.Factorisations(values, sp["rows"], sp["cols"], size)
+    x = factors.solve(rhs, "N", REFINE["signal"])                                      # A x = b
+    w = (factors.solve(np.swapaxes(c_rows, 1, 2), "H", REFINE["weights"]).swapaxes(1, 2)   # A^H w_d = c_d
+         if c_rows.shape[1] else np.zeros(c_rows.shape, dtype=np.complex128))
     s["factors"] = factors
     s["x"], s["w"] = x, w
 
@@ -521,12 +539,10 @@ def _backward(plan, optimized, parameters, carrier_values, signal_values, carrie
     # signal + weights solve (WS2 adjoint formulas, WS1 SuperLU kernel)
     rows, cols = sp["rows"], sp["cols"]
     x_bar, u_bar = signal_bar.T, np.conj(w_bar)
-    lam_x = np.empty(x_bar.shape, dtype=np.complex128)
-    lam_u = np.empty(u_bar.shape, dtype=np.complex128)
-    for f, lu in enumerate(s["factors"]):                           # reuse the forward factorisations
-        lam_x[f] = lu.solve(x_bar[f].copy(), "T", REFINE["adjoint"])  # A^T lam_x = x_bar
-        if u_bar.shape[1]:
-            lam_u[f] = lu.solve(u_bar[f].T.copy(), "N", REFINE["adjoint"]).T   # A lam_u = u_bar
+    factors = s["factors"]                                          # reuse the forward factorisations
+    lam_x = factors.solve(x_bar, "T", REFINE["adjoint"])            # A^T lam_x = x_bar
+    lam_u = (factors.solve(np.swapaxes(u_bar, 1, 2), "N", REFINE["adjoint"]).swapaxes(1, 2)   # A lam_u = u_bar
+             if u_bar.shape[1] else np.zeros(u_bar.shape, dtype=np.complex128))
     values_bar = -lam_x[:, rows] * x[:, cols] - np.sum(np.conj(w)[:, :, rows] * lam_u[:, :, cols], axis=1)
     rhs_bar, c_bar = lam_x, np.conj(lam_u)                           # (R, N), (R, D, N)
 

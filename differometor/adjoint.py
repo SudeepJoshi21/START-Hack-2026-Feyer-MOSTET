@@ -76,9 +76,9 @@ def signal_pattern(signal_matrix, signal_matrix_indices) -> tuple[np.ndarray, np
     return (flat // n).astype(np.int32), (flat % n).astype(np.int32)
 
 
-def pattern_arrays(simulation_arrays: dict) -> dict:
+def pattern_arrays(simulation_arrays: dict, as_jax: bool = True) -> dict:
     """
-    Extra keyword arguments for `simulate` that switch on the adjoint path.
+    Extra keyword arguments for `simulate` that switch on the adjoint path (`as_jax=False`: NumPy arrays).
 
     Called by `run_build_step`. Returns {} (=> original dense path) if a precondition of
     the adjoint path does not hold, so unusual setups keep working unchanged:
@@ -123,13 +123,14 @@ def pattern_arrays(simulation_arrays: dict) -> dict:
     else:
         noise_parameter_rows = np.zeros(1, dtype=np.int32)
 
-    return {
-        "signal_pattern_rows": jnp.asarray(rows),
-        "signal_pattern_cols": jnp.asarray(cols),
-        "noise_base_rows": jnp.asarray(base_rows.astype(np.int32)),
-        "noise_base_cols": jnp.asarray(base_cols.astype(np.int32)),
-        "noise_parameter_rows": jnp.asarray(noise_parameter_rows),
+    arrays = {
+        "signal_pattern_rows": rows,
+        "signal_pattern_cols": cols,
+        "noise_base_rows": base_rows.astype(np.int32),
+        "noise_base_cols": base_cols.astype(np.int32),
+        "noise_parameter_rows": noise_parameter_rows,
     }
+    return {k: jnp.asarray(v) for k, v in arrays.items()} if as_jax else arrays
 
 
 # ---------------------------------------------------------------------------------------
@@ -197,73 +198,108 @@ def _superlu():
     return _SUPERLU
 
 
-class _Refined:
+REUSE_ORDERING = True
+"""
+Compute SuperLU's fill-reducing column order (COLAMD) once and reuse it for every frequency (the-prime-model-new).
+
+All systems share one sparsity pattern, so COLAMD returns the same order each time. The matrices are permuted
+symmetrically (B = P^T A P, rows and columns, so the diagonal SuperLU's pivot search prefers stays the same) and
+factorised with ColPerm=NATURAL: same fill (nnz(L+U) 9845), 101 factorisations 80 -> 67 ms. Not bit-identical to
+per-frequency COLAMD (round-off level, 6e-8 relative on the raw solves; refinement and the accuracy gates as before).
+"""
+
+
+def _gstrf(n, data, indices, indptr, options):
+    return _superlu().gstrf(
+        n, data.shape[0], data, indices, indptr, csc_construct_func=_no_csc, ilu=False, options=options
+    )
+
+
+class Factorisations:
     """
-    SuperLU factorisation (COLAMD, the defaults of `scipy.sparse.linalg.splu`) of the CSC matrix (data, indices,
-    indptr), with refined solves for op(A) in {A, A^T, A^H}. The residual products use the pattern directly.
+    SuperLU factorisations of the F systems vals[f] (F, nnz) on one pattern (rows, cols), with refined solves for
+    op(A) in {A, A^T, A^H}, batched over frequencies. Refinement (x += op(A)^-1 (b - op(A) x)) computes the
+    residual products of all frequencies in one vectorised step; per bin the sums run in the same order as one
+    frequency at a time, so results equal the unbatched products exactly.
     """
 
-    def __init__(self, data, indices, indptr, columns):
-        n = indptr.shape[0] - 1
-        self.data, self.rows, self.columns, self.n = data, indices, columns, n
-        self.lu = _superlu().gstrf(
-            n, data.shape[0], data, indices, indptr,
-            csc_construct_func=_no_csc, ilu=False, options=SUPERLU_OPTIONS,
-        )
+    def __init__(self, vals, rows, cols, n):
+        vals = np.asarray(vals)
+        rows, cols = np.asarray(rows).astype(np.int64), np.asarray(cols).astype(np.int64)
+        self.n, self.perm = n, None
+        options = SUPERLU_OPTIONS
+        if REUSE_ORDERING and vals.shape[0] > 1:
+            order, indices, indptr = _csc_structure(rows, cols, n)
+            first = _gstrf(n, np.ascontiguousarray(vals[0][order], dtype=np.complex128),
+                           indices.astype(np.intc), indptr.astype(np.intc), options)
+            perm = np.argsort(np.asarray(first.perm_c))     # B[i, j] = A[perm[i], perm[j]]
+            position = np.argsort(perm)
+            rows, cols = position[rows], position[cols]
+            self.perm, options = perm, dict(options, ColPerm="NATURAL")
+        order, indices, indptr = _csc_structure(rows, cols, n)
+        self.data = np.ascontiguousarray(vals[:, order], dtype=np.complex128)   # (F, nnz), CSC order
+        self.rows, self.columns = indices, np.repeat(np.arange(n), np.diff(indptr))
+        indices, indptr = indices.astype(np.intc), indptr.astype(np.intc)
+        self.factors = [_gstrf(n, self.data[f], indices, indptr, options) for f in range(vals.shape[0])]
+        self._index = {}
+
+    def __len__(self):
+        return len(self.factors)
 
     def _apply(self, x, trans):
+        """op(A_f) x[f] for all f; x (F, n, k)."""
         if trans == "H":
             return np.conj(self._apply(np.conj(x), "T"))
         source, target = (self.columns, self.rows) if trans == "N" else (self.rows, self.columns)
-        if x.ndim == 2:
-            return np.stack([self._apply(x[:, j], trans) for j in range(x.shape[1])], axis=1)
-        terms = self.data * x[source]
-        return (np.bincount(target, terms.real, minlength=self.n)
-                + 1j * np.bincount(target, terms.imag, minlength=self.n))
+        frequencies, n, k = x.shape
+        if (trans, k) not in self._index:
+            self._index[(trans, k)] = (
+                (np.arange(frequencies)[:, None] * n + target[None, :])[:, :, None] * k + np.arange(k)
+            ).ravel()
+        index = self._index[(trans, k)]
+        terms = self.data[:, :, None] * x[:, source, :]
+        size = frequencies * n * k
+        out = (np.bincount(index, terms.real.ravel(), minlength=size)
+               + 1j * np.bincount(index, terms.imag.ravel(), minlength=size))
+        return out.reshape(x.shape)
+
+    def _solve(self, rhs, trans):
+        return np.stack([lu.solve(rhs[f], trans=trans) for f, lu in enumerate(self.factors)])
 
     def solve(self, rhs, trans, refine=True):
-        x = self.lu.solve(rhs, trans=trans)
+        """op(A_f)^-1 rhs[f] for every frequency f; rhs (F, n) or (F, n, k)."""
+        shape = rhs.shape
+        rhs = np.asarray(rhs, dtype=np.complex128).reshape(shape[0], shape[1], -1)
+        if self.perm is not None:
+            rhs = rhs[:, self.perm]
+        x = self._solve(rhs, trans)
         for _ in range(REFINEMENT_STEPS if refine else 0):
-            x = x + self.lu.solve(rhs - self._apply(x, trans), trans=trans)
-        return x
+            x = x + self._solve(rhs - self._apply(x, trans), trans)
+        if self.perm is not None:
+            unpermuted = np.empty_like(x)
+            unpermuted[:, self.perm] = x
+            x = unpermuted
+        return x.reshape(shape)
 
 
 def _no_csc(*args, **kwargs):
     raise NotImplementedError("L/U factors are not needed")
 
 
-def _host_factorisations(vals, rows, cols, n):
-    """Yield one SuperLU factorisation per frequency (COLAMD ordering, as validated by WS1), with refined solves."""
-    order, indices, indptr = _csc_structure(np.asarray(rows), np.asarray(cols), n)
-    indices, indptr = indices.astype(np.intc), indptr.astype(np.intc)
-    columns = np.repeat(np.arange(n), np.diff(indptr))
-    vals = np.asarray(vals)
-    for f in range(vals.shape[0]):
-        data = np.ascontiguousarray(vals[f][order], dtype=np.complex128)
-        yield f, _Refined(data, indices, indptr, columns)
-
-
 def _host_forward(vals, rows, cols, b, C):
     b, C = np.asarray(b), np.asarray(C)
-    n = b.shape[-1]
-    x = np.empty(b.shape, dtype=np.complex128)
-    W = np.empty(C.shape, dtype=np.complex128)
-    for f, lu in _host_factorisations(vals, rows, cols, n):
-        x[f] = lu.solve(b[f], trans="N")                 # A x = b
-        if C.shape[1]:
-            W[f] = lu.solve(C[f].T.copy(), trans="H").T  # A^H w_d = c_d, all detectors at once
-    return x, W
+    factors = Factorisations(vals, rows, cols, b.shape[-1])
+    x = factors.solve(b, "N")                                              # A x = b
+    W = factors.solve(np.swapaxes(C, 1, 2), "H").swapaxes(1, 2) if C.shape[1] else np.zeros(C.shape, np.complex128)
+    return x, W                                                            # A^H w_d = c_d, all detectors at once
 
 
 def _host_adjoint(vals, rows, cols, xbar, ubar):
     xbar, ubar = np.asarray(xbar), np.asarray(ubar)
-    n = xbar.shape[-1]
-    lam_x = np.empty(xbar.shape, dtype=np.complex128)
-    lam_u = np.empty(ubar.shape, dtype=np.complex128)
-    for f, lu in _host_factorisations(vals, rows, cols, n):   # refactorise: ~0.6 ms
-        lam_x[f] = lu.solve(xbar[f], trans="T")               # A^T lam_x = xbar
-        if ubar.shape[1]:
-            lam_u[f] = lu.solve(ubar[f].T.copy(), trans="N").T  # A lam_u = ubar
+    factors = Factorisations(vals, rows, cols, xbar.shape[-1])            # refactorise: ~0.7 ms per frequency
+    lam_x = factors.solve(xbar, "T")                                       # A^T lam_x = xbar
+    lam_u = (factors.solve(np.swapaxes(ubar, 1, 2), "N").swapaxes(1, 2)    # A lam_u = ubar
+             if ubar.shape[1] else np.zeros(ubar.shape, np.complex128))
     return lam_x, lam_u
 
 

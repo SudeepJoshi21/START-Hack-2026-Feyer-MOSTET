@@ -23,6 +23,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import differometor as df  # noqa: E402
 from differometor import host  # noqa: E402
+
+host.JAX_PATH_ARRAYS = True  # compare against the WS2/WS3 JAX path (run_build_step leaves those arrays out by default)
 from differometor.components import FUNCTIONS  # noqa: E402
 
 sim = sys.modules["differometor.simulate"]

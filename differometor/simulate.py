@@ -594,27 +594,29 @@ def run_build_step(
 
     simulation_arrays = {arg_names[i]: array for i, array in enumerate(all_arrays)}
     # [WS2] Static sparsity pattern => adjoint path in `simulate` ({} keeps the old path).
-    simulation_arrays.update(adjoint.pattern_arrays(simulation_arrays))
+    pattern = adjoint.pattern_arrays(simulation_arrays, as_jax=False)
 
     # [WS3] Grouped component evaluation + pattern assembly (keyword-only `assembly`). {} keeps the old path.
     # The adjoint consumes the plan's values on (signal_pattern_rows, signal_pattern_cols), so both patterns
     # must be identical element by element; otherwise fall back to the original assembly.
-    assembly_plan = _assembly.assembly_arrays(simulation_arrays)
-    if assembly_plan and "signal_pattern_rows" in simulation_arrays:
-        same_pattern = np.array_equal(
-            np.asarray(assembly_plan["signal"]["rows"]), np.asarray(simulation_arrays["signal_pattern_rows"])
-        ) and np.array_equal(
-            np.asarray(assembly_plan["signal"]["cols"]), np.asarray(simulation_arrays["signal_pattern_cols"])
+    assembly_plan = _assembly.assembly_arrays(simulation_arrays, as_jax=False)
+    if assembly_plan and pattern:
+        same_pattern = np.array_equal(assembly_plan["signal"]["rows"], pattern["signal_pattern_rows"]) and np.array_equal(
+            assembly_plan["signal"]["cols"], pattern["signal_pattern_cols"]
         )
         if not same_pattern:
             assembly_plan = {}
-    if assembly_plan:
-        simulation_arrays["assembly"] = assembly_plan
 
     # [host-native] whole simulation on the host (NumPy/SciPy) when every precondition holds.
-    plan = _host.host_plan(simulation_arrays)
+    plan = _host.host_plan({**simulation_arrays, **pattern, **({"assembly": assembly_plan} if assembly_plan else {})})
     if plan is not None:
         simulation_arrays["host_plan"] = plan
+    if plan is None or _host.JAX_PATH_ARRAYS:
+        # [the-prime-model-new] The WS2/WS3 arrays only serve the JAX path. With a host plan they are left out
+        # (71 fewer jit arguments and host-to-device transfers); the JAX path then runs the original code.
+        simulation_arrays.update({k: jnp.asarray(v) for k, v in pattern.items()})
+        if assembly_plan:
+            simulation_arrays["assembly"] = _assembly._to_jax(assembly_plan)
 
     if timeit:
         for array in simulation_arrays.values():

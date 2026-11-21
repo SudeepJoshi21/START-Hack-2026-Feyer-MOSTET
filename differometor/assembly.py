@@ -134,9 +134,10 @@ def _signal_plan(signal_matrix, matrix_indices, flat_outputs, carrier_indices, p
     }
 
 
-def assembly_arrays(simulation_arrays: dict) -> dict:
+def assembly_arrays(simulation_arrays: dict, as_jax: bool = True) -> dict:
     """
     Build-time assembly plan for `simulate(..., assembly=...)`. NumPy only.
+    `as_jax=False` returns the NumPy arrays (for the host plan) instead of JAX arrays.
 
     Returns {} if assembly is disabled or a precondition fails; `simulate` then uses the original code.
     """
@@ -168,7 +169,7 @@ def assembly_arrays(simulation_arrays: dict) -> dict:
     except ValueError:
         return {}
     plan["signal"] = signal
-    return _to_jax(plan)
+    return _to_jax(plan) if as_jax else plan
 
 
 def _to_jax(tree):

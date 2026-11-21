@@ -23,6 +23,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import differometor as df  # noqa: E402
 from differometor import assembly  # noqa: E402
+from differometor import host  # noqa: E402
+
+host.JAX_PATH_ARRAYS = True  # these tests inspect the WS3 plan, which run_build_step leaves out when the host plan is used
 
 sim = sys.modules["differometor.simulate"]
 
