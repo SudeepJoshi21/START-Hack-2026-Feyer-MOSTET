@@ -118,45 +118,31 @@ def _to_jax(value, dtype=None) -> jnp.ndarray:
     return jnp.asarray(np.asarray(value, dtype=dtype))
 
 
-@jax.jit
-def _space_entries(space_inputs: tuple) -> tuple:
+def _numpy_component(name: str):
     """
-    `space(row)[0]` for every row, one jitted call instead of one eager evaluation per space.
+    A function of `components.py` evaluated with NumPy instead of eager `jax.numpy` (host-native branch).
 
-    space_inputs : tuple of (K, 3) arrays, one per dtype group, rows `[F, length, refractive_index]`
-        exactly as `space(jnp.array([F, length, refractive_index]))` receives them.
-
-    Bitwise identical to the eager calls: at build time the frequency is `F = 0`, so the phase
-    `-2*pi*i*F*L*n/c` is an exact (signed) zero and `-exp(phase)` is exactly `-1 +/- 0i`. Fusion
-    or vectorisation can therefore not change any bit. (The same is NOT true for the mirror and
-    beamsplitter coefficients: XLA fuses and FMA-contracts `left - right` phase terms, so those
-    stay eager in `build`.)
+    Eager `jnp` calls dispatch and compile one small XLA program per operation (the mirror and beamsplitter
+    coefficients cost ~0.3-0.5 s of build that way). `host.numpy_namespace` runs the *same* component code on
+    NumPy. Results can differ from XLA's elementwise kernels in the last bit (base-matrix entries, ~1e-16).
     """
-    return tuple(jax.vmap(space)(group)[:, 0] for group in space_inputs)
+    from differometor.host import numpy_namespace
+
+    return numpy_namespace()[name]
 
 
 def _apply_space_entries(carrier_matrix: np.ndarray, space_writes: list) -> None:
     """
-    Evaluate the recorded space entries in one call and write them in their original order.
+    Evaluate the recorded space entries (with NumPy, one vectorised call) and write them in their original order.
 
     space_writes : list of ((row, col), [F, length, refractive_index]).
-    Rows whose inputs are not all plain Python ints/floats use the original eager call.
     """
-    batched = [k for k, (_, row) in enumerate(space_writes) if all(type(v) in (int, float) for v in row)]
-    # `jnp.array([F, length, refractive_index])` is int64 when all three are ints, else float64.
-    groups = {}
-    for k in batched:
-        groups.setdefault(all(type(v) is int for v in space_writes[k][1]), []).append(k)
-    keys = list(groups)
-    values = {}
-    if keys:
-        inputs = tuple(
-            np.asarray([space_writes[k][1] for k in groups[key]], dtype=np.int64 if key else np.float64) for key in keys
-        )
-        for key, group_values in zip(keys, _space_entries(inputs)):
-            values.update(zip(groups[key], np.asarray(group_values)))
-    for k, (position, row) in enumerate(space_writes):
-        carrier_matrix[position] = values[k] if k in values else space(jnp.array(row))[0]
+    if not space_writes:
+        return
+    inputs = np.asarray([row for _, row in space_writes], dtype=np.complex128).T     # (3, K)
+    values = np.asarray(_numpy_component("space")(inputs))[0]                       # (K,)
+    for (position, _), value in zip(space_writes, values):
+        carrier_matrix[position] = value
 
 
 def set_instructions(
@@ -950,7 +936,7 @@ def build(setup: Setup):
                 refractive_index_left_position = surfaces_to_refractive_index_parameter_position[node].get("left", 1)
                 refractive_index_right_position = surfaces_to_refractive_index_parameter_position[node].get("right", 1)
 
-                matrix = mirror_matrix(
+                matrix = _numpy_component("mirror_matrix")(
                     data["properties"]["loss"],
                     data["properties"]["reflectivity"],
                     data["properties"]["tuning"],
@@ -997,7 +983,7 @@ def build(setup: Setup):
                 refractive_index_left_position = surfaces_to_refractive_index_parameter_position[node].get("left", 1)
                 refractive_index_right_position = surfaces_to_refractive_index_parameter_position[node].get("right", 1)
 
-                matrix = beamsplitter_matrix(
+                matrix = _numpy_component("beamsplitter_matrix")(
                     data["properties"]["loss"],
                     data["properties"]["reflectivity"],
                     data["properties"]["tuning"],

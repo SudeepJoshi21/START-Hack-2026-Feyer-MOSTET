@@ -178,13 +178,20 @@ _SHIM = types.SimpleNamespace(
 
 
 @functools.lru_cache(maxsize=1)
-def numpy_functions() -> tuple:
-    """`components.FUNCTIONS`, re-bound so that `jnp` means `_SHIM` (NumPy + Dual). Same code, same order."""
+def numpy_namespace() -> dict:
+    """Every function of `components.py`, re-bound so that `jnp` means `_SHIM` (NumPy + Dual). Same code."""
     namespace = dict(vars(_components))
     namespace["jnp"] = _SHIM
     for name, obj in list(namespace.items()):
         if isinstance(obj, types.FunctionType) and obj.__module__ == _components.__name__:
             namespace[name] = types.FunctionType(obj.__code__, namespace, name, obj.__defaults__, obj.__closure__)
+    return namespace
+
+
+@functools.lru_cache(maxsize=1)
+def numpy_functions() -> tuple:
+    """`components.FUNCTIONS` on NumPy (see `numpy_namespace`), same order."""
+    namespace = numpy_namespace()
     return tuple(namespace[f.__name__] for f in _components.FUNCTIONS)
 
 
@@ -236,9 +243,9 @@ def _component_pullback(rows: np.ndarray, groups: tuple, outputs_bar: np.ndarray
         jac = _jacobian(functions[function_type], x)                             # (R*K_t, 4, I)
         ybar = outputs_bar[:, offset * 4 : (offset + k) * 4].reshape(r * k, 4)   # (R*K_t, 4)
         contribution = np.real(np.einsum("no,noi->ni", ybar, jac)).reshape(r, k, -1)
-        row_index = np.broadcast_to(np.arange(r)[:, None, None], contribution.shape)
-        column_index = np.broadcast_to(inputs[None, :, :], contribution.shape)
-        np.add.at(rows_bar, (row_index, column_index), contribution)
+        width = rows_bar.shape[1]
+        flat = (np.arange(r)[:, None, None] * width + inputs[None, :, :]).ravel()
+        rows_bar += np.bincount(flat, weights=contribution.ravel(), minlength=r * width).reshape(r, width)
         offset += k
 
 
@@ -430,7 +437,15 @@ def _forward(plan, optimized, parameters, carrier_values, signal_values):
     s["selection_tiled"] = tiled
     s["c_rows"], s["rhs"] = c_rows, rhs
 
-    x, w = _adjoint._host_forward(values, sp["rows"], sp["cols"], rhs, np.ascontiguousarray(c_rows))
+    # one SuperLU factorisation per frequency (WS1), kept in the state for the backward pass
+    factors = [lu for _, lu in _adjoint._host_factorisations(values, sp["rows"], sp["cols"], size)]
+    x = np.empty((r, size), dtype=np.complex128)
+    w = np.empty(c_rows.shape, dtype=np.complex128)
+    for f, lu in enumerate(factors):
+        x[f] = lu.solve(rhs[f], "N")                                  # A x = b
+        if c_rows.shape[1]:
+            w[f] = lu.solve(c_rows[f].T.copy(), "H").T                # A^H w_d = c_d
+    s["factors"] = factors
     s["x"], s["w"] = x, w
 
     # noise = sqrt(2 K Re(w^H Q w)), Q values from the grouped noise components
@@ -445,9 +460,10 @@ def _forward(plan, optimized, parameters, carrier_values, signal_values):
     return carrier.T, x.T, noise.T, s
 
 
-def _backward(plan, optimized, parameters, carrier_values, signal_values, carrier_bar_out, signal_bar, noise_bar):
+def _backward(plan, optimized, parameters, carrier_values, signal_values, carrier_bar_out, signal_bar, noise_bar, s=None):
     g, cp, sp, npn = plan["global"], plan["carrier"], plan["signal"], plan["noise"]
-    _, _, _, s = _forward(plan, optimized, parameters, carrier_values, signal_values)
+    if s is None:                                                   # no cached forward state: recompute
+        _, _, _, s = _forward(plan, optimized, parameters, carrier_values, signal_values)
     carrier, x, w, ps, pc = s["carrier"], s["x"], s["w"], s["ps"], s["pc"]
     cv, cn = carrier.shape
     r, size = x.shape
@@ -468,7 +484,13 @@ def _backward(plan, optimized, parameters, carrier_values, signal_values, carrie
 
     # signal + weights solve (WS2 adjoint formulas, WS1 SuperLU kernel)
     rows, cols = sp["rows"], sp["cols"]
-    lam_x, lam_u = _adjoint._host_adjoint(s["values"], rows, cols, signal_bar.T.copy(), np.conj(w_bar))
+    x_bar, u_bar = signal_bar.T, np.conj(w_bar)
+    lam_x = np.empty(x_bar.shape, dtype=np.complex128)
+    lam_u = np.empty(u_bar.shape, dtype=np.complex128)
+    for f, lu in enumerate(s["factors"]):                           # reuse the forward factorisations
+        lam_x[f] = lu.solve(x_bar[f].copy(), "T")                     # A^T lam_x = x_bar
+        if u_bar.shape[1]:
+            lam_u[f] = lu.solve(u_bar[f].T.copy(), "N").T             # A lam_u = u_bar
     values_bar = -lam_x[:, rows] * x[:, cols] - np.sum(np.conj(w)[:, :, rows] * lam_u[:, :, cols], axis=1)
     rhs_bar, c_bar = lam_x, np.conj(lam_u)                           # (R, N), (R, D, N)
 
@@ -568,12 +590,27 @@ def _output_shapes(plan, carrier_values, signal_values):
     )
 
 
+_LAST_FORWARD = {"key": None, "state": None}
+"""
+The forward state (including the SuperLU factorisations) of the most recent forward call, keyed by the exact bytes
+of its inputs. The backward pass reuses it instead of recomputing the forward. This is ordinary AD residual storage,
+kept on the host because SuperLU factor objects cannot be passed through XLA. On a key mismatch the backward
+recomputes, so results never depend on the cache.
+"""
+
+
+def _input_key(plan, packed_inputs: np.ndarray) -> tuple:
+    return plan.key, hashlib.sha1(np.ascontiguousarray(packed_inputs).tobytes()).digest()
+
+
 def _call_forward(plan, optimized, parameters, carrier_values, signal_values):
     shapes = [optimized.shape, parameters.shape, carrier_values.shape, signal_values.shape]
 
     def host(packed):
-        o, p, c, s = _unpack(np.asarray(packed), shapes)
-        carrier, signal, noise, _ = _forward(plan, o.real, p, c, s.real)
+        packed = np.asarray(packed)
+        o, p, c, s = _unpack(packed, shapes)
+        carrier, signal, noise, state = _forward(plan, o.real, p, c, s.real)
+        _LAST_FORWARD["key"], _LAST_FORWARD["state"] = _input_key(plan, packed), state
         return carrier, signal, noise.astype(np.float64)
 
     return jax.pure_callback(
@@ -600,9 +637,13 @@ def _simulate_bwd(plan, residuals, cotangents):
     in_shapes = [optimized.shape, parameters.shape, carrier_values.shape, signal_values.shape]
     ct_shapes = [s.shape for s in shapes]
 
+    input_size = sum(int(np.prod(shape)) for shape in in_shapes)
+
     def host(packed):
-        o, p, c, s, cb, sb, nb = _unpack(np.asarray(packed), in_shapes + ct_shapes)
-        grads = _backward(plan, o.real, p, c, s.real, cb, sb, nb.real)
+        packed = np.asarray(packed)
+        o, p, c, s, cb, sb, nb = _unpack(packed, in_shapes + ct_shapes)
+        cached = _LAST_FORWARD["state"] if _LAST_FORWARD["key"] == _input_key(plan, packed[:input_size]) else None
+        grads = _backward(plan, o.real, p, c, s.real, cb, sb, nb.real, s=cached)
         return tuple(
             (np.asarray(gr) if np.issubdtype(dt, np.complexfloating) else np.real(gr)).astype(dt)
             for gr, dt in zip(grads, dtypes)
