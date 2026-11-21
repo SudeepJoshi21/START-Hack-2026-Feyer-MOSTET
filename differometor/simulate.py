@@ -18,6 +18,7 @@ Conventions used throughout:
 """
 
 import jax
+import numpy as np
 from time import time
 import jax.numpy as jnp
 from jax import lax, vmap, jit
@@ -112,6 +113,96 @@ def solve_hermitian_with_lu(matrix, right_hand_side, lu, pivots):
         solve=lambda _, x: lu_solve((lu, pivots), x, trans=2),
         # The linear transpose of A^H is conj(A): conj(A) y = r  <=>  y = conj(A^-1 conj(r)).
         transpose_solve=lambda _, x: jnp.conjugate(lu_solve((lu, pivots), jnp.conjugate(x), trans=0)),
+    )
+
+
+# -----------------------------------------------------------------------------
+# Sparse signal-system solves
+# -----------------------------------------------------------------------------
+# The signal matrix is ~0.5% non-zero with the same pattern at every frequency.
+# Factorizing it with SciPy's SuperLU on that pattern is ~60x faster than a dense
+# LU. The factorization runs on the host through `jax.pure_callback`; gradients
+# are provided by `lax.custom_linear_solve`, exactly as for `jnp.linalg.solve`.
+
+SPARSE_SIGNAL_SOLVE = True
+"""Use the sparse (SuperLU) signal solve. Set to False to use the dense LU path."""
+
+
+def _csc_structure(pattern: np.ndarray, size: int):
+    """Column-major ordering of a (2, nnz) pattern: (order, row indices, column pointers)."""
+    rows, cols = pattern
+    order = np.lexsort((rows, cols))
+    indptr = np.zeros(size + 1, dtype=np.int64)
+    np.add.at(indptr, cols + 1, 1)
+    return order, rows[order], np.cumsum(indptr)
+
+
+def _host_sparse_solve(values, right_hand_side, pattern, trans):
+    """
+    Host-side batched sparse solve.
+
+    values (F, nnz) complex, right_hand_side (F, N) complex, pattern (2, nnz) int,
+    trans in {"N", "T", "H"}. Each frequency is factorized afresh (~0.6 ms), so no
+    factor objects need to outlive a callback.
+    """
+    from scipy.sparse import csc_matrix
+    from scipy.sparse.linalg import splu
+
+    values = np.asarray(values)
+    right_hand_side = np.asarray(right_hand_side)
+    size = right_hand_side.shape[-1]
+    order, indices, indptr = _csc_structure(np.asarray(pattern), size)
+    solution = np.empty(right_hand_side.shape, dtype=np.complex128)
+    for index in range(values.shape[0]):
+        matrix = csc_matrix((values[index][order], indices, indptr), shape=(size, size))
+        solution[index] = splu(matrix, permc_spec="COLAMD").solve(right_hand_side[index], trans=trans)
+    return solution
+
+
+def _sparse_solve(values, right_hand_side, pattern, trans):
+    """`jax.pure_callback` wrapper around `_host_sparse_solve` (not differentiable on its own)."""
+    right_hand_side = right_hand_side.astype(jnp.complex128)
+    return jax.pure_callback(
+        lambda v, b, p: _host_sparse_solve(v, b, p, trans),
+        jax.ShapeDtypeStruct(right_hand_side.shape, jnp.complex128),
+        values,
+        right_hand_side,
+        pattern,
+        vmap_method="sequential",
+    )
+
+
+def sparse_solve(matrices, right_hand_side, pattern):
+    """
+    Solve `matrices[f] @ x[f] = right_hand_side[f]` for every f with a sparse LU.
+
+    matrices (F, N, N), right_hand_side (F, N), pattern (2, nnz) covering every
+    possibly non-zero entry. Gradients match `vmap(solve)`.
+    """
+    matrices = matrices.astype(jnp.complex128)
+    values = lax.stop_gradient(matrices[:, pattern[0], pattern[1]])
+    return lax.custom_linear_solve(
+        lambda x: jnp.einsum("fij,fj->fi", matrices, x),
+        right_hand_side.astype(jnp.complex128),
+        solve=lambda _, b: _sparse_solve(values, b, pattern, "N"),
+        transpose_solve=lambda _, b: _sparse_solve(values, b, pattern, "T"),
+    )
+
+
+def sparse_solve_hermitian(matrices, right_hand_side, pattern):
+    """
+    Solve `matrices[f]^H @ x[f] = right_hand_side[f]` (conjugate transpose) with a sparse LU.
+
+    Shapes as in `sparse_solve`. Gradients match `vmap(solve)` on the conjugate-transposed matrices.
+    """
+    matrices = matrices.astype(jnp.complex128)
+    values = lax.stop_gradient(matrices[:, pattern[0], pattern[1]])
+    return lax.custom_linear_solve(
+        lambda x: jnp.einsum("fji,fj->fi", jnp.conjugate(matrices), x),
+        right_hand_side.astype(jnp.complex128),
+        solve=lambda _, b: _sparse_solve(values, b, pattern, "H"),
+        # The linear transpose of A^H is conj(A): conj(A) y = r  <=>  y = conj(A^-1 conj(r)).
+        transpose_solve=lambda _, b: jnp.conjugate(_sparse_solve(values, jnp.conjugate(b), pattern, "N")),
     )
 
 
@@ -242,6 +333,9 @@ def simulate(
     noise_function_indices: jnp.ndarray,
     noise_output_indices: tuple[jnp.ndarray, jnp.ndarray],
     noise_system_matrix_indices: tuple[jnp.ndarray, jnp.ndarray],
+    # structure arrays (see `run_build_step`)
+    signal_pattern: jnp.ndarray,
+    noise_parameter_rows: jnp.ndarray,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Run one full simulation pass: carrier, signal, and quantum noise.
@@ -306,6 +400,13 @@ def simulate(
     noise_function_input_indices, noise_function_indices, noise_output_indices,
     noise_system_matrix_indices :
         Indexing and function-selection arrays used by `update` to fill the noise matrix.
+
+    signal_pattern : jnp.ndarray
+        Row and column indices of every entry of the signal system matrix (without the
+        right-hand-side column) that can be non-zero, shape (2, nnz).
+    noise_parameter_rows : jnp.ndarray
+        Parameter rows used to build the noise matrix: `[0]` when no swept parameter
+        feeds the noise functions (the matrix is then built once), otherwise all rows.
 
     Returns
     -------
@@ -388,11 +489,14 @@ def simulate(
         jnp.conjugate(signal_matrix[:, carrier_size : carrier_size * 2, carrier_size * 2 :])
     )
 
-    # Factorize the signal system once per frequency; the signal solve and the
-    # conjugate-transposed noise solve below both reuse these factors.
     signal_system = signal_matrix[:, :, :-1]
-    signal_lu, signal_pivots = lu_factor(signal_system)
-    signal = vmap(solve_with_lu)(signal_system, signal_matrix[:, :, -1], signal_lu, signal_pivots)
+    if SPARSE_SIGNAL_SOLVE:
+        signal = sparse_solve(signal_system, signal_matrix[:, :, -1], signal_pattern)
+    else:
+        # Factorize the signal system once per frequency; the signal solve and the
+        # conjugate-transposed noise solve below both reuse these factors.
+        signal_lu, signal_pivots = lu_factor(signal_system)
+        signal = vmap(solve_with_lu)(signal_system, signal_matrix[:, :, -1], signal_lu, signal_pivots)
 
     # --------------------
     # Quantum noise solve
@@ -427,18 +531,25 @@ def simulate(
     ].set(lower_carrier_selections)
 
     # Back-propagate detector weights by solving the conjugate-transposed signal system,
-    # w = A^-H c, reusing the LU factors of A.
+    # w = A^-H c (reusing the LU factors of A on the dense path).
     carrier_selections = jnp.broadcast_to(
         carrier_selections,
         (carrier_selections.shape[0], signal_system.shape[0], carrier_selections.shape[2]),
     )
-    noise_weights = vmap(vmap(solve_hermitian_with_lu), in_axes=(None, 0, None, None))(
-        signal_system, carrier_selections, signal_lu, signal_pivots
-    )
+    if SPARSE_SIGNAL_SOLVE:
+        noise_weights = vmap(sparse_solve_hermitian, in_axes=(None, 0, None))(
+            signal_system, carrier_selections, signal_pattern
+        )
+    else:
+        noise_weights = vmap(vmap(solve_hermitian_with_lu), in_axes=(None, 0, None, None))(
+            signal_system, carrier_selections, signal_lu, signal_pivots
+        )
 
-    # Update noise source matrix (may depend on current parameters).
+    # Update noise source matrix. The noise functions (vacuum, loss, squeezer) do not
+    # depend on frequency, so unless a swept parameter feeds them the matrix is built
+    # once (`noise_parameter_rows == [0]`) and broadcast over frequencies.
     noise_matrix = vmap(update, in_axes=(0, None, None, None, None, None))(
-        parameters,
+        parameters[noise_parameter_rows],
         noise_matrix,
         noise_function_input_indices,
         noise_output_indices,
@@ -450,13 +561,51 @@ def simulate(
     # propagated Q w through a second solve, z = A^-1 Q w, and read out Re(c^H z).
     # Because A^H w = c we have c^H A^-1 = w^H, so Re(c^H z) = Re(w^H Q w):
     # the same quantity without another linear solve.
-    noise_sources = jnp.einsum("fij,dfj->dfi", noise_matrix, noise_weights)
+    noise_sources = jnp.matmul(noise_matrix, noise_weights[..., None])[..., 0]
 
     # Convert the projected noise into amplitude spectral density.
     temporary_sum = jnp.sum(jnp.real(jnp.conjugate(noise_weights) * noise_sources), axis=2)
     noise = jnp.sqrt(2 * temporary_sum * UNIT_VACUUM * H_PLANCK * F0 * 0.25)
 
     return carrier.T, signal.T, noise.squeeze()
+
+
+def _structure_arrays(instructions, matrices, prepared_arrays, signal_arrays, noise_arrays, changing_pairs):
+    """
+    Build the structure arrays `simulate` uses for the sparse solve and the noise matrix.
+
+    Returns
+    -------
+    signal_pattern : jnp.ndarray
+        (2, nnz) row/column indices of every signal-matrix entry that can be non-zero:
+        the base matrix's non-zeros plus every entry `update` or the carrier scaling writes.
+    noise_parameter_rows : jnp.ndarray
+        `[0]` if no swept parameter is an input of a noise function (the noise matrix is
+        then identical for every row), otherwise the indices of all parameter rows.
+    """
+    parameter_names = instructions[4]
+    signal_matrix = np.asarray(matrices[2])
+    size = signal_matrix.shape[0]
+
+    rows, cols = np.nonzero(signal_matrix[:, :-1])
+    written = [np.asarray(signal_arrays[3]), np.asarray(signal_arrays[5])]
+    written_rows = np.concatenate([w[0] for w in written]) % size
+    written_cols = np.concatenate([w[1] for w in written]) % (size + 1)
+    in_matrix = written_cols < size  # column `size` (index -1) is the right-hand side
+    rows = np.concatenate([rows, written_rows[in_matrix]])
+    cols = np.concatenate([cols, written_cols[in_matrix]])
+    pattern = np.unique(np.stack([rows, cols]).astype(np.int64), axis=1)
+
+    swept = {parameter_names.index(f"{c}_{p}") for c, p in (changing_pairs or [])}
+    noise_inputs = set(np.asarray(noise_arrays[0]).astype(int).ravel().tolist())
+    if swept & noise_inputs:
+        # Rows of the expanded parameter array: carrier sweep values x signal sweep values.
+        row_count = np.asarray(prepared_arrays[4]).shape[1] * np.asarray(prepared_arrays[6]).shape[1]
+        noise_parameter_rows = jnp.arange(row_count)
+    else:
+        noise_parameter_rows = jnp.asarray([0])
+
+    return jnp.asarray(pattern), noise_parameter_rows
 
 
 def run_build_step(
@@ -512,10 +661,14 @@ def run_build_step(
     )
     prepared_arrays = prepare_arrays(*arrays_to_prepare, changing_values, parameters=matrices[0])
 
+    structure_arrays = _structure_arrays(
+        instructions, matrices, prepared_arrays, signal_arrays, noise_arrays, changing_pairs
+    )
+
     arg_count = simulate.__code__.co_argcount
     arg_names = simulate.__code__.co_varnames[:arg_count]
 
-    all_arrays = (*prepared_arrays, *matrices, *carrier_arrays, *signal_arrays, *noise_arrays)
+    all_arrays = (*prepared_arrays, *matrices, *carrier_arrays, *signal_arrays, *noise_arrays, *structure_arrays)
     if len(arg_names) != len(all_arrays):
         raise ValueError(
             "simulate signature does not match the number of prepared arrays and matrices. "
