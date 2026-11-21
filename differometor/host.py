@@ -48,6 +48,13 @@ ENABLED = True
 NOISE_FACTOR = UNIT_VACUUM * H_PLANCK * F0 * 0.25
 """noise = sqrt(2 * S * NOISE_FACTOR), exactly as in `simulate`."""
 
+REFINE = {"signal": False, "weights": True, "adjoint": True}
+"""
+Which SuperLU solves get one step of iterative refinement (adjoint.REFINEMENT_STEPS). Measured against dense LU
+(the-prime-model-new): the noise weights (A^H) need it on Voyager (3.6e-3 without), the adjoint solves too (Voyager
+gradient 1.1e-4 without, 4e-13 with); the signal solve does not (Voyager 9.7e-10, uifo 4.8e-8 without).
+"""
+
 
 # =======================================================================================
 # Forward-mode dual numbers and the NumPy namespace the component functions run on
@@ -202,16 +209,42 @@ def _evaluate(function, inputs: np.ndarray) -> np.ndarray:
     return np.broadcast_to(out.T if out.ndim == 2 else out[None, :], (inputs.shape[1], 4)).astype(np.complex128)
 
 
-def _jacobian(function, inputs: np.ndarray) -> np.ndarray:
-    """d outputs / d inputs along real directions. inputs (I, n) -> (n, 4, I) complex."""
+def _jacobian(function, inputs: np.ndarray, slots=None) -> np.ndarray:
+    """
+    d outputs / d inputs along real directions. inputs (I, n) -> (n, 4, U) complex, for the input slots `slots`
+    (default: all I). Seeding only the slots a function actually reads keeps the dual numbers small.
+    """
     count, n = inputs.shape
-    seed = np.zeros((count, n, count), dtype=np.complex128)
-    seed[np.arange(count), :, np.arange(count)] = 1.0
+    slots = np.arange(count) if slots is None else slots
+    seed = np.zeros((count, n, slots.size), dtype=np.complex128)
+    seed[slots, :, np.arange(slots.size)] = 1.0
     out = function(Dual(inputs, seed))
     if not isinstance(out, Dual):  # constant output
-        return np.zeros((n, 4, count), dtype=np.complex128)
-    tangent = np.broadcast_to(out.d, (4, n, count)) if out.d.ndim == 3 else out.d
+        return np.zeros((n, 4, slots.size), dtype=np.complex128)
+    tangent = np.broadcast_to(out.d, (4, n, slots.size)) if out.d.ndim == 3 else out.d
     return np.transpose(tangent, (1, 0, 2)).astype(np.complex128)
+
+
+_USED_SLOTS = {}
+
+
+def _used_slots(function_type: int, sample: np.ndarray) -> np.ndarray:
+    """
+    Input slots a component function reads (cached per type). Inputs are padded to 7 slots, most functions read 1-3.
+
+    Decided from the full Jacobian at a few real calls and at a perturbed copy of them: a slot counts as used if any
+    derivative w.r.t. it is non-zero or non-finite at any of these points (conservative: a slot is only dropped if
+    its derivative is exactly zero everywhere it was probed, i.e. the function does not read it).
+    """
+    if function_type not in _USED_SLOTS:
+        function = numpy_functions()[function_type]
+        probes = [sample, sample * (1 + 1e-3) + 1e-3]
+        used = np.zeros(sample.shape[0], dtype=bool)
+        for probe in probes:
+            jac = _jacobian(function, probe)
+            used |= np.any((jac != 0) | ~np.isfinite(jac), axis=(0, 1))
+        _USED_SLOTS[function_type] = np.flatnonzero(used)
+    return _USED_SLOTS[function_type]
 
 
 def _component_values(rows: np.ndarray, groups: tuple) -> np.ndarray:
@@ -240,13 +273,16 @@ def _component_pullback(rows: np.ndarray, groups: tuple, outputs_bar: np.ndarray
         if k == 0:
             continue
         x = rows[:, inputs].reshape(r * k, -1).T                                 # (I, R*K_t)
-        jac = _jacobian(functions[function_type], x)                             # (R*K_t, 4, I)
-        ybar = outputs_bar[:, offset * 4 : (offset + k) * 4].reshape(r * k, 4)   # (R*K_t, 4)
+        slots = _used_slots(function_type, x[:, : min(4, x.shape[1])])
+        offset += k
+        if slots.size == 0:
+            continue
+        jac = _jacobian(functions[function_type], x, slots)                      # (R*K_t, 4, U)
+        ybar = outputs_bar[:, (offset - k) * 4 : offset * 4].reshape(r * k, 4)   # (R*K_t, 4)
         contribution = np.real(np.einsum("no,noi->ni", ybar, jac)).reshape(r, k, -1)
         width = rows_bar.shape[1]
-        flat = (np.arange(r)[:, None, None] * width + inputs[None, :, :]).ravel()
+        flat = (np.arange(r)[:, None, None] * width + inputs[None, :, slots]).ravel()
         rows_bar += np.bincount(flat, weights=contribution.ravel(), minlength=r * width).reshape(r, width)
-        offset += k
 
 
 # =======================================================================================
@@ -442,9 +478,9 @@ def _forward(plan, optimized, parameters, carrier_values, signal_values):
     x = np.empty((r, size), dtype=np.complex128)
     w = np.empty(c_rows.shape, dtype=np.complex128)
     for f, lu in enumerate(factors):
-        x[f] = lu.solve(rhs[f], "N")                                  # A x = b
+        x[f] = lu.solve(rhs[f], "N", REFINE["signal"])                # A x = b
         if c_rows.shape[1]:
-            w[f] = lu.solve(c_rows[f].T.copy(), "H").T                # A^H w_d = c_d
+            w[f] = lu.solve(c_rows[f].T.copy(), "H", REFINE["weights"]).T   # A^H w_d = c_d
     s["factors"] = factors
     s["x"], s["w"] = x, w
 
@@ -488,9 +524,9 @@ def _backward(plan, optimized, parameters, carrier_values, signal_values, carrie
     lam_x = np.empty(x_bar.shape, dtype=np.complex128)
     lam_u = np.empty(u_bar.shape, dtype=np.complex128)
     for f, lu in enumerate(s["factors"]):                           # reuse the forward factorisations
-        lam_x[f] = lu.solve(x_bar[f].copy(), "T")                     # A^T lam_x = x_bar
+        lam_x[f] = lu.solve(x_bar[f].copy(), "T", REFINE["adjoint"])  # A^T lam_x = x_bar
         if u_bar.shape[1]:
-            lam_u[f] = lu.solve(u_bar[f].T.copy(), "N").T             # A lam_u = u_bar
+            lam_u[f] = lu.solve(u_bar[f].T.copy(), "N", REFINE["adjoint"]).T   # A lam_u = u_bar
     values_bar = -lam_x[:, rows] * x[:, cols] - np.sum(np.conj(w)[:, :, rows] * lam_u[:, :, cols], axis=1)
     rhs_bar, c_bar = lam_x, np.conj(lam_u)                           # (R, N), (R, D, N)
 
@@ -662,3 +698,76 @@ _simulate.defvjp(_simulate_fwd, _simulate_bwd)
 def simulate(plan, optimized_parameters, parameters, carrier_changing_values, signal_changing_values):
     """Host-native equivalent of `differometor.simulate` for the arrays `run_build_step` produced with this plan."""
     return _simulate(plan, optimized_parameters, parameters, carrier_changing_values, signal_changing_values)
+
+
+# =======================================================================================
+# Detector read-outs on the host (used by `differometor.signal_detector` / `power_detector` when enabled)
+# =======================================================================================
+# The benchmark's sensitivity and gradient programs are compiled by XLA around these two functions. As host
+# callbacks with hand-written VJPs (JAX conventions: holomorphic parts transpose, conj parts conjugate) they add
+# only a callback each to those programs.
+
+def _host_call(function, out_shape, *arrays):
+    shapes = [a.shape for a in arrays]
+
+    def run(packed):
+        return function(*_unpack(np.asarray(packed), shapes))
+
+    return jax.pure_callback(run, out_shape, _pack(*arrays), vmap_method="sequential")
+
+
+@jax.custom_vjp
+def signal_detector(carrier, signal):
+    """Same as `components.signal_detector`: conj(c) * s_upper + c * s_lower."""
+    n = carrier.shape[0]
+    shape = jnp.broadcast_shapes(carrier.shape, signal[:n].shape)
+    return _host_call(
+        lambda c, s: np.conj(c) * s[:n] + c * s[n : 2 * n],
+        jax.ShapeDtypeStruct(shape, jnp.complex128), carrier, signal,
+    )
+
+
+def _signal_detector_fwd(carrier, signal):
+    return signal_detector(carrier, signal), (carrier, signal)
+
+
+def _signal_detector_bwd(residuals, y_bar):
+    carrier, signal = residuals
+    n = carrier.shape[0]
+    shapes = [carrier.shape, signal.shape, y_bar.shape]
+
+    def bwd(c, s, yb):
+        c_bar = np.conj(yb * s[:n]) + yb * s[n : 2 * n]
+        c_bar = c_bar.sum(axis=tuple(i for i in range(c_bar.ndim) if c.shape[i] == 1 and c_bar.shape[i] != 1), keepdims=True)
+        s_bar = np.zeros(s.shape, dtype=np.complex128)
+        s_bar[:n] = yb * np.conj(c)
+        s_bar[n : 2 * n] = yb * c
+        return c_bar.astype(np.complex128), s_bar
+
+    out = (jax.ShapeDtypeStruct(shapes[0], jnp.complex128), jax.ShapeDtypeStruct(shapes[1], jnp.complex128))
+    c_bar, s_bar = _host_call(bwd, out, carrier, signal, y_bar)
+    return c_bar.astype(carrier.dtype), s_bar.astype(signal.dtype)
+
+
+signal_detector.defvjp(_signal_detector_fwd, _signal_detector_bwd)
+
+
+@jax.custom_vjp
+def power_detector(solution):
+    """Same as `components.power_detector`: 0.5 * EPSILON_0C * |E|^2."""
+    return _host_call(
+        lambda e: (0.5 * _components.EPSILON_0C * np.abs(e) ** 2).astype(np.float64),
+        jax.ShapeDtypeStruct(solution.shape, jnp.float64), solution,
+    )
+
+
+def _power_detector_fwd(solution):
+    return power_detector(solution), solution
+
+
+def _power_detector_bwd(solution, y_bar):
+    # y = k |E|^2 (real) -> E_bar = 2 k y_bar conj(E)  (JAX convention, cf. jax.grad(abs(z)**2) = 2 conj(z))
+    return (2 * 0.5 * _components.EPSILON_0C * y_bar * jnp.conj(solution),)
+
+
+power_detector.defvjp(_power_detector_fwd, _power_detector_bwd)

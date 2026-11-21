@@ -11,6 +11,10 @@ from differometor.setups import Setup
 from differometor.simulate import run, run_build_step, run_simulation_step, simulate
 from differometor.components import power_detector, signal_detector
 
+if _os.environ.get("DIFFEROMETOR_HOST_DETECTORS", "1") != "0":
+    # [the-prime-model-new] detector read-outs as host callbacks with hand-written VJPs (see host.py)
+    from differometor.host import power_detector, signal_detector  # noqa: F811
+
 
 def __getattr__(name):
     # `visualize_setup` pulls in plotly; import it only when it is first used.

@@ -146,6 +146,14 @@ def _csc_structure(rows, cols, n):
     return order, rows[order], np.cumsum(indptr)
 
 
+SUPERLU_OPTIONS = dict(ColPerm="COLAMD", PanelSize=4, Relax=4)
+"""
+COLAMD ordering as `splu`'s default, with smaller supernode panel and relaxation sizes than SuperLU's defaults, which
+suit these small, very sparse systems: factorisation of the 101 benchmark
+systems 90.8 -> 76.2 ms with identical accuracy (refined W vs dense LU 1.4e-8 uifo, 1.6e-13 Voyager).
+Pivoting is unchanged (a pivot threshold of 0.1 was 9 ms faster but was not adopted).
+"""
+
 REFINEMENT_STEPS = 1
 """
 Iterative-refinement steps after every SuperLU solve (x += A^-1 (b - A x)).
@@ -201,7 +209,7 @@ class _Refined:
         self.data, self.rows, self.columns, self.n = data, indices, columns, n
         self.lu = _superlu().gstrf(
             n, data.shape[0], data, indices, indptr,
-            csc_construct_func=_no_csc, ilu=False, options=dict(ColPerm="COLAMD"),
+            csc_construct_func=_no_csc, ilu=False, options=SUPERLU_OPTIONS,
         )
 
     def _apply(self, x, trans):
@@ -214,9 +222,9 @@ class _Refined:
         return (np.bincount(target, terms.real, minlength=self.n)
                 + 1j * np.bincount(target, terms.imag, minlength=self.n))
 
-    def solve(self, rhs, trans):
+    def solve(self, rhs, trans, refine=True):
         x = self.lu.solve(rhs, trans=trans)
-        for _ in range(REFINEMENT_STEPS):
+        for _ in range(REFINEMENT_STEPS if refine else 0):
             x = x + self.lu.solve(rhs - self._apply(x, trans), trans=trans)
         return x
 
