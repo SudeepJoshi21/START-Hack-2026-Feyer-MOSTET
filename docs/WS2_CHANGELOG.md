@@ -185,3 +185,32 @@ The dense path matches the original only because it uses the same LAPACK algorit
 **Neither result is verified to better than ~1e-3 for that setup.** The scored fixture is far better conditioned at the
 relevant entries (sparse vs original 2e-8, reference check passes with 2.6× margin).
 Options if it matters: `adjoint.SOLVER = "dense"` for such setups, or a precision study (e.g. extended-precision residuals).
+
+---
+
+## Step 3 (2026-11-21, on `main`): fix "noise matrix computed once" never triggering
+
+**Bug (mine, from step 2's port):** `adjoint.pattern_arrays` decides whether the 66 noise-source functions can be evaluated once
+(`noise_parameter_rows = [0]`) by intersecting the *swept* parameter indices with the noise functions' input indices. Two
+details made the intersection always non-empty:
+- Without a carrier sweep, `prepare_arrays` emits a **dummy one-value carrier "sweep" of parameter index 0**.
+- Unused noise-input slots are **padded with index 0**.
+
+So on `main`, Q was rebuilt for every frequency (`noise_parameter_rows` had F rows). WS1's original check used the swept
+*names* and did not have this problem. **Correctness was never affected** (per-row is always right); only the claimed saving was missing.
+
+**Fix:** only sweeps with more than one value count as swept. A real sweep of parameter 0 still falls back (conservative).
+
+**Why Q is frequency-independent (physics):** Q holds the noise *sources*: vacuum (constant ½), loss-induced vacuum (∝ mirror
+loss), squeezed vacuum (squeeze dB, angle). Quantum vacuum noise is white in the sideband picture. The frequency dependence of
+the detector noise comes from the optical response A(f) through `w(f) = A(f)⁻ᴴ c`, which is still solved for every frequency.
+Q changes per row only when a sweep changes a noise-source parameter. The fallback handles that.
+
+| Check | Result |
+|---|---|
+| fixture `noise_parameter_rows` | (10,) → **(1,)** |
+| aLIGO frequency sweep | (F,) → **(1,)** (frequency does not feed its noise either); noise vs original 3.5e-11 |
+| aLIGO squeezer-dB sweep | stays per-row **(7,)** (correct fallback); noise vs original 4.5e-10 |
+| `tests/test_adjoint.py`, `tests/test_assembly.py` | 5/5, ALL PASS |
+| `bench.py check` | PASS, unchanged (`|Δln S|` 3.761e-6, gradients 2.0e-5, cosine 1.0) |
+| `benchmark.py --cpus 1`, interleaved A/B on a busy laptop | fixed 31.6 / 33.8 s vs before 33.3 / 35.4 s (fixed faster both times; absolute values above the earlier 28.8 s because of machine load) |
