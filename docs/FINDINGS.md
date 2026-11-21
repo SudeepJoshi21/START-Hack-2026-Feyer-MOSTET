@@ -142,6 +142,22 @@ Gradient caveat: `jnp.real` drops the imaginary cotangent, which is correct only
   The duplication comes from the helpers being **inlined into 5 different bodies** (surface in carrier and signal, force L/R,
   optomechanical phase L/R) and expanded as complex math. Remaining `vmap(lax.switch)`: only parameter linking (1 linked parameter), small.
 
+### 1.10 Why repeated `benchmark.py` runs give different numbers (merged `main`, laptop, 2026-11-21)
+8 official runs (`--cpus 1 --repeats 3 --save-arrays`), 4 pinned to CPU 0 (default) and 4 moved to core 9 with `taskset -c 9`,
+alternating, nothing else heavy running:
+- **The physics outputs never change.** carrier, signal, noise, sensitivity, powers and gradient are **bit-identical in all 8
+  runs**, and so are the validation values (max |Δln S| 5.374241e-6, gradient-check autodiff 7.616168e-5). Each run had a different
+  random `PYTHONHASHSEED`, so ordering by hash does not affect the results.
+- **Only the timing varies:** first-run total 1.68 / 1.85 / 2.33 s (min / median / max). Spread by stage: **imports 0.64–1.00 s
+  (correlation with total +0.98)**, first forward run 0.26–0.54 s (+0.81), build 0.20–0.28 s (+0.91). The compile stages are
+  stable (≤ 0.07 s spread). So the variation is in the operating system (loading jax/numpy/scipy from the WSL disk image,
+  file-cache state, CPU boost clocks, background processes such as the VS Code server), not in our code.
+- **CPU 0 is not the cause on a quiet machine:** core 9 gave 1.70–2.33 s against 1.68–1.88 s on CPU 0. Earlier large swings
+  (e.g. 31 vs 39 s) came from **other pinned jobs running at the same time**. `--cpus 1` always pins to the first allowed CPU, so two
+  concurrent benchmark or check jobs share one core.
+- **How to measure:** nothing else running, report the **median of ≥ 5 runs**, and ignore the first run after a reboot (cold
+  file cache). For the final numbers use the cluster.
+
 ## 2. Correction to my earlier notes
 - Noise matrix `Q`: **66 component-function calls producing 272 non-zeros** (the plan's number is right;
   I had written "66 non-zeros").

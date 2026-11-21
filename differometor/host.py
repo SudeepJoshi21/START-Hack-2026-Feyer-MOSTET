@@ -149,7 +149,16 @@ class Dual:
 def _unary(function, derivative):
     def apply(x):
         if isinstance(x, Dual):
-            return Dual(function(x.v), derivative(x.v) * x.d)
+            # A direction the input does not depend on (tangent exactly 0) contributes exactly 0, as with JAX's
+            # symbolic zeros, even where the derivative is infinite (sqrt(0), arcsin(±1), log10(0)). Without this,
+            # 0 * inf = NaN leaked into unrelated gradients, e.g. a mirror's tuning gradient at reflectivity 1.0.
+            # Finite derivatives give bit-identical results either way (finite * 0 == 0).
+            with np.errstate(divide="ignore", invalid="ignore"):
+                slope = derivative(x.v)
+            d = slope * x.d
+            if not np.all(np.isfinite(slope)):
+                d = np.where(x.d == 0, 0, d)
+            return Dual(function(x.v), d)
         return function(x)
 
     return apply
