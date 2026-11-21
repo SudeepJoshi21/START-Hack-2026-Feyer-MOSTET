@@ -38,7 +38,7 @@ Correctness (`python scripts/bench.py check --fd`, 10 freqs, vs unmodified code)
 - `signal_pattern(signal_matrix, signal_matrix_indices)`: NumPy, at build time. The positions that can be non-zero in
   the signal matrix A: base-matrix non-zeros ∪ positions written by `update`. `update` writes the right-hand side
   through column index **−1**; those indices are normalised (`mod (n+1)`) and excluded from A. The result is sorted and unique,
-  so a scatter-set equals a scatter-add. For this fixture: 2,668 positions, and all 2,537 actual non-zeros lie inside.
+  so a scatter-set equals a scatter-add. For this fixture: **2,597** positions (same set as WS1's `_structure_arrays`), and all 2,537 actual non-zeros lie inside. *(Corrected: an earlier version of this log said 2,668. That count came from a one-off script that did not normalise the −1 right-hand-side column, not from the code; WS1 spotted it.)*
 - `pattern_arrays(simulation_arrays)`: returns `{"signal_pattern_rows", "signal_pattern_cols"}`, or `{}` (which
   keeps the original path) if a precondition fails: the noise matrix is not N×N, the noise update indices are negative, or the noise update positions are
   not unique.
@@ -97,3 +97,91 @@ python tests/test_adjoint.py
 python scripts/bench.py check --fd
 python scripts/bench.py parts --parts pipeline,forward --trials 2 --ref 02ec741
 ```
+
+---
+
+## Step 2 (2026-11-21): integration with WS1 (branch `integration`)
+
+`integration` = `origin/main` + merge `ws2-adjoint` + merge `ws1` (its `simulate.py` resolved to the WS2 version,
+following `docs/WS1_WS2_INTEGRATION.md` §2) + this step: WS1's sparse solver moved under WS2's custom gradient.
+
+### What changed, file by file
+
+**`differometor/adjoint.py`** (rewritten around the same maths)
+- `solve_signal_and_noise_weights` is now **batched over frequencies** (`vals (F,nnz)`, `b (F,n)`, `C (F,D,n)`), not vmapped.
+  One host call per direction, instead of 101.
+- `SOLVER = "sparse"` (default): WS1's SciPy SuperLU kernel (`_csc_structure` from WS1, COLAMD ordering) via
+  `jax.pure_callback(..., vmap_method="sequential")`.
+  - `_host_forward`: per frequency, one `splu`, then `x = solve(b, "N")` and `W = solve(Cᵀ, "H")` for all detectors at once.
+  - `_host_adjoint`: refactorises (~0.6–1.5 ms), then `λx = solve(x̄, "T")` and `λu = solve(conj(W̄)ᵀ, "N")`.
+  - **The tape keeps only `vals`, `x`, `W`; no LU factors** (WS1 guide §3 step 3).
+- `SOLVER = "dense"`: the step-1 XLA LU path (factors on the tape), kept for A/B tests and as a fallback.
+- `_bwd`: the same formula as step 1, written for the batch.
+- `signal_pattern`: also wraps negative **row** indices (`rows mod n`) before `np.unique` (WS1 guide §5). Test added.
+- `pattern_arrays` returns three more keys:
+  - `noise_base_rows/cols`: non-zeros of the base noise matrix that `update` doesn't overwrite. This replaces the dense
+    `q_base` matrix and its 751² product (WS1 guide §3 step 7; K = 0 for the fixture).
+  - `noise_parameter_rows`: `[0]` when no swept parameter (carrier or signal sweep indices) is an input of a noise
+    function, so the 66 noise functions run **once** instead of 101 times (WS1's idea, guide §3 step 5). Otherwise all rows.
+    aLIGO's frequency sweep and a squeezer-dB sweep both feed noise functions, and the check correctly falls back.
+- `quadratic_noise(W, q_vals, q_rows, q_cols)`: the base term moved into the sparse lists.
+
+**`differometor/simulate.py`**
+- Three more keyword-only arguments: `noise_base_rows`, `noise_base_cols`, `noise_parameter_rows` (default `None`).
+- Adjoint branch: one batched call (`carrier_selections` swapped to `(F, D, N)`). The noise values are computed on
+  `parameters[noise_parameter_rows]` and broadcast to F, concatenated with the base non-zeros, then `quadratic_noise`.
+- The original path (`adjoint.ENABLED = False`, or setups failing the preconditions) is unchanged.
+- WS1's positional `signal_pattern` / `noise_parameter_rows` arguments and its `sparse_solve` /
+  `custom_linear_solve` helpers are **not** carried over (they would duplicate this path).
+
+**`tests/test_adjoint.py`**: now 5 tests, each run for **both** solvers:
+- forward results vs the original 3-solve formulation (< 1e-11)
+- gradients vs JAX autodiff of the original (< 1e-10, 3 seeds)
+- sparse == dense (< 1e-11 outputs, < 1e-10 gradients)
+- under `jit` + `jax.vjp` with the pullback returned and called in a second `jit`, plus a tape-size assertion (no F·n² arrays)
+- pattern wraps negative rows and columns
+
+### Validation (laptop, Ryzen AI 7 350, 1 CPU)
+| Check | Result |
+|---|---|
+| `tests/test_adjoint.py` | 5/5 PASS (sparse and dense) |
+| `bench.py check --fd` (fixture, 10 freqs, all 193 grads) | **PASS**: `|Δln S|` vs reference 3.761e-6 (baseline 3.759e-6); signal 2.4e-8, noise 1.0e-8; gradients max 2.0e-5 relative (`boundary01.power`), cosine 1.0; carrier and powers bit-identical; `mb11.tuning` FD agrees |
+| aLIGO frequency sweep vs Finesse-verified data | max `|Δln S|` 2.3e-10 |
+| aLIGO squeezer-dB sweep, adjoint vs original path | 1.6e-10 |
+| aLIGO, 25-point log sweep, adjoint vs original | signal 5.7e-11, noise 1.0e-11 |
+| **Voyager**, 25-point log sweep, adjoint vs original | dense solver: 1.7e-13. **Sparse solver: noise up to 2.1e-3 (median 7.7e-6)**, see the known issue below |
+
+Timing (10 freqs, 2 trials each):
+
+| | Original `02ec741` | `ws1` only | **integration** |
+|---|---:|---:|---:|
+| forward run (first) | 5.05 s | 1.54 s | 1.14–1.41 s |
+| warm forward+sensitivity+gradient | 4.23 s | 1.91 s | 1.59–2.05 s |
+| first-run total | 69.8 s | 61.0 s | 62.7–64.4 s (compile-bound; same as ws1 within noise) |
+| peak RSS | 2.57 GB | 2.02 GB | **1.82 GB** |
+
+Warm medians, sparse vs dense solver on this branch (4 runs each):
+
+| freqs | sparse fwd / grad | dense fwd / grad |
+|---|---|---|
+| 4 | 0.30 / 0.31 s | 1.09 / 0.44 s |
+| 10 | 0.67–0.71 / 0.85–1.06 s | 1.55–1.83 / 0.64–0.66 s |
+| 20 | **1.56 / 1.41 s** | 4.74 / 2.22 s |
+
+At 10 freqs the sparse *gradient* is reproducibly slower than dense, although its host callbacks take only 12 ms. At 4 and 20
+freqs sparse wins both passes, so it stays the default. **Unexplained; worth one profile on the cluster.**
+
+Peak memory: 1.82 GB at 10 freqs, 3.13 GB at 30, so about **7.8 GB at 101**. Too much for the 7 GB laptop; run the official
+`benchmark.py` on the cluster.
+
+### Known issue: sparse vs dense LU on Voyager (not scored)
+At 287 Hz the noise weight vector `w` spans ~21 orders of magnitude (max |w| ≈ 3.5e13, tiny at the noise-source rows).
+Any LU solve has an absolute error of ~ε·max|w| ≈ 5e-3 there. Measured:
+- `|Δw|` at the noise rows ≈ 5e-3 between the sparse and dense solves, while `W` agrees to 3e-14 *relative to its max*;
+- so noise differs by 2e-3 and `cond(A)` ≈ 9e31;
+- iterative refinement and other orderings (NATURAL, MMD_AT_PLUS_A) do not change it.
+
+The dense path matches the original only because it uses the same LAPACK algorithm and rounding, not because it is more accurate.
+**Neither result is verified to better than ~1e-3 for that setup.** The scored fixture is far better conditioned at the
+relevant entries (sparse vs original 2e-8, reference check passes with 2.6× margin).
+Options if it matters: `adjoint.SOLVER = "dense"` for such setups, or a precision study (e.g. extended-precision residuals).

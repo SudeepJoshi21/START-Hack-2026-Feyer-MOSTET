@@ -212,6 +212,9 @@ def simulate(
     *,
     signal_pattern_rows: jnp.ndarray | None = None,
     signal_pattern_cols: jnp.ndarray | None = None,
+    noise_base_rows: jnp.ndarray | None = None,
+    noise_base_cols: jnp.ndarray | None = None,
+    noise_parameter_rows: jnp.ndarray | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Run one full simulation pass: carrier, signal, and quantum noise.
@@ -397,25 +400,37 @@ def simulate(
     ].set(lower_carrier_selections)
 
     if use_adjoint:
-        # [WS2] Adjoint path (differometor/adjoint.py, docs/WS2_CHANGELOG.md):
-        #   one LU per frequency gives  signal x = A^-1 b  and  weights w = A^-H c,
-        #   noise sum = Re(w^H Q w)  (replaces the third solve A^-1 Q w),
-        #   custom_vjp keeps the AD tape to LU factors + x + w (no dense cotangents).
+        # [WS1+WS2] Adjoint path (differometor/adjoint.py, docs/WS2_CHANGELOG.md):
+        #   one factorisation per frequency (SuperLU by default) gives
+        #   signal x = A^-1 b and weights w = A^-H c; noise sum = Re(w^H Q w)
+        #   (replaces the third solve A^-1 Q w); custom_vjp keeps the AD tape to
+        #   the sparse values of A + x + w (no dense cotangents, no LU factors).
         num_signal = signal_matrix.shape[0]
         carrier_selections = jnp.broadcast_to(
             carrier_selections,
             (carrier_selections.shape[0], num_signal, carrier_selections.shape[2]),
         )                                                            # (D, F, N)
         values = signal_matrix[:, signal_pattern_rows, signal_pattern_cols]   # (F, nnz)
-        signal, noise_weights = vmap(
-            adjoint.solve_signal_and_noise_weights, in_axes=(0, None, None, 0, 1)
-        )(values, signal_pattern_rows, signal_pattern_cols, signal_matrix[:, :, -1], carrier_selections)
+        signal, noise_weights = adjoint.solve_signal_and_noise_weights(
+            values, signal_pattern_rows, signal_pattern_cols, signal_matrix[:, :, -1],
+            jnp.swapaxes(carrier_selections, 0, 1),                  # (F, D, N)
+        )                                                            # (F, N), (F, D, N)
+        # Noise matrix Q as non-zeros: the M values `update` writes (computed once when no
+        # swept parameter feeds a noise function) plus the K base entries it keeps (K = 0 here).
+        noise_rows = parameters if noise_parameter_rows is None else parameters[noise_parameter_rows]
         noise_values = vmap(component_outputs, in_axes=(0, None, None, None))(
-            parameters, noise_function_input_indices, noise_output_indices, noise_function_indices
-        )                                                            # (F, M)
-        noise_base = noise_matrix.at[noise_system_matrix_indices[0], noise_system_matrix_indices[1]].set(0)
-        temporary_sum = vmap(adjoint.quadratic_noise, in_axes=(0, 0, None, None, None))(
-            noise_weights, noise_values, noise_system_matrix_indices[0], noise_system_matrix_indices[1], noise_base
+            noise_rows, noise_function_input_indices, noise_output_indices, noise_function_indices
+        )                                                            # (1 or F, M)
+        base_values = jnp.broadcast_to(
+            noise_matrix[noise_base_rows, noise_base_cols], (noise_values.shape[0], noise_base_rows.shape[0])
+        )                                                            # (1 or F, K)
+        q_values = jnp.broadcast_to(
+            jnp.concatenate([noise_values, base_values], axis=1), (num_signal, noise_values.shape[1] + base_values.shape[1])
+        )                                                            # (F, M + K)
+        q_rows = jnp.concatenate([noise_system_matrix_indices[0], noise_base_rows])
+        q_cols = jnp.concatenate([noise_system_matrix_indices[1], noise_base_cols])
+        temporary_sum = vmap(adjoint.quadratic_noise, in_axes=(0, 0, None, None))(
+            noise_weights, q_values, q_rows, q_cols
         ).T                                                          # (D, F)
         noise = jnp.sqrt(2 * temporary_sum * UNIT_VACUUM * H_PLANCK * F0 * 0.25)
         return carrier.T, signal.T, noise.squeeze()
