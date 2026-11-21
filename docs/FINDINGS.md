@@ -81,6 +81,22 @@ dropped: 36–49 s vs 20 s compile, so the **residual outputs themselves** rough
 - **History hints the numerics are delicate:** an old comment on `solve` refers to a `linalg_solve_debug.ipynb` that
   investigated precision errors (matches the plan's cond(A) ≈ 1e30).
 
+### 1.7 XLA compile-effort settings (measured; needs organiser approval before use)
+Same code (`ws2-adjoint`), laptop, 1 CPU, 4 freqs, `scripts/profile_stages.py`, 2 runs each:
+
+| Setting | forward compile | gradient compile | forward run | first-run total |
+|---|---:|---:|---:|---:|
+| default | 40.4 / 39.4 s | 11.7 / 11.6 s | 0.95 / 1.44 s | 61.8 / 61.1 s |
+| `XLA_FLAGS=--xla_backend_optimization_level=0` | 21.6 / 22.3 s | 7.1 / 7.1 s | 1.20 / 1.00 s | **39.2 / 39.2 s (1.56×)** |
+| `JAX_EXEC_TIME_OPTIMIZATION_EFFORT=-1` (1 run) | 38.3 s | 12.0 s | 0.98 s | 60.5 s |
+
+- `max |Δln S|` unchanged (2.94e-6), so the numerics are not affected here.
+- Backend optimisation level 0 roughly **halves compile** (LLVM does less work). The LU itself is a LAPACK call and is
+  unaffected, but elementwise code may run slower. **Run-time cost at 101 freqs is not measured yet.**
+- It would have to be set from inside `differometor` before the CPU backend initialises (the benchmark sets
+  no flags, and its report records `XLA_FLAGS`). That is the plan's open question: **ask Feyer before relying on it.**
+- `exec_time_optimization_effort` alone does nothing measurable.
+
 ## 2. Correction to my earlier notes
 - Noise matrix `Q`: **66 component-function calls producing 272 non-zeros** (the plan's number is right;
   I had written "66 non-zeros").
