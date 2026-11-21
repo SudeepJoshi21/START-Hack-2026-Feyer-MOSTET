@@ -1185,7 +1185,10 @@ def incidence_angle_right(alpha: float, refractive_index_left: float, refractive
     # All inputs are physically real; do the trig in float64 (see incidence_angle_left).
     alpha = jnp.real(alpha)
     ratio = jnp.real(refractive_index_left) / jnp.real(refractive_index_right)
-    return jnp.cos(jnp.arcsin(ratio * jnp.sin(jnp.radians(alpha))))
+    # cos(arcsin(x)) == sqrt(1 - x**2): same result (NaN for total internal
+    # reflection, |x| > 1), without two transcendental ops.
+    x = ratio * jnp.sin(jnp.radians(alpha))
+    return jnp.sqrt(1.0 - x * x)
 
 
 def phase_shift(tuning: float, frequency: float, refractive_index: float) -> jnp.ndarray:
