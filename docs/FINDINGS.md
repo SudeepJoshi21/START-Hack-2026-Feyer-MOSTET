@@ -129,6 +129,19 @@ on physically real inputs (`phase_shift`, `space_modulation`, `standardize_outpu
 Gradient caveat: `jnp.real` drops the imaginary cotangent, which is correct only because these inputs are real parameters
 (optimised parameters are float64 inserted into the complex vector). Validate with `bench.py check` when implementing.
 
+**Follow-up questions (checked on the fixture):**
+- *Are α and the refractive indices fixed?* **Yes.** None of the 7 incidence-angle parameters (values 0° / 45°) or the refractive-index
+  parameters (all 1.0) is optimised, linked or swept. The 4 optimised `angle`s are the **squeezer** angles. So `cos α` and
+  `cos(arcsin(n_l/n_r·sin α))` could be computed once in NumPy at build time and passed in as a small array (a gather, no trig in
+  the graph). This must stay conditional: precompute only calls whose α/n inputs are not optimised, linked or swept, and keep traced code otherwise.
+  It needs changed component signatures (WS3). Extra gain over the real-trig change is small (real trig already removes ~1,100 of the
+  ~1,300 ops), so do real trig first.
+- *Are the call sites inside Python loops over components?* **No.** WS3's `assembly.component_outputs` loops over function
+  **types** (17 bodies: carrier 3, signal 11, noise 3), each `vmap`ped over all its calls (e.g. 54 surfaces), so graph size does not
+  grow with the component count. `lax.scan` doesn't apply: the bodies are different functions, and `vmap` already gives one body per type.
+  The duplication comes from the helpers being **inlined into 5 different bodies** (surface in carrier and signal, force L/R,
+  optomechanical phase L/R) and expanded as complex math. Remaining `vmap(lax.switch)`: only parameter linking (1 linked parameter), small.
+
 ## 2. Correction to my earlier notes
 - Noise matrix `Q`: **66 component-function calls producing 272 non-zeros** (the plan's number is right;
   I had written "66 non-zeros").
