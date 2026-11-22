@@ -343,13 +343,14 @@ class Factorisations:
                + 1j * np.bincount(index, terms.imag.ravel(), minlength=size))
         return out.reshape(x.shape)
 
-    def _solve(self, rhs, trans):
-        return np.stack([lu.solve(rhs[f], trans=trans) for f, lu in enumerate(self.factors)])
+    def _solve(self, rhs, trans, rows=None):
+        factors = self.factors if rows is None else [self.factors[f] for f in rows]
+        return np.stack([lu.solve(rhs[i], trans=trans) for i, lu in enumerate(factors)])
 
-    def _apply_extended(self, x, trans):
-        """op(A_f) x[f] in extended precision (np.clongdouble); x (F, n, k) clongdouble. Products sorted by output row."""
+    def _apply_extended(self, x, trans, rows=None):
+        """op(A_f) x[f] in extended precision (np.clongdouble) for the frequencies `rows` (default all); x (F', n, k)."""
         if trans == "H":
-            return np.conj(self._apply_extended(np.conj(x), "T"))
+            return np.conj(self._apply_extended(np.conj(x), "T", rows))
         if trans not in self._padded:
             source, target = (self.columns, self.rows) if trans == "N" else (self.rows, self.columns)
             order = np.argsort(target, kind="stable")
@@ -366,15 +367,33 @@ class Factorisations:
                 starts = np.concatenate([[0], np.cumsum(np.maximum(counts, 1))[:-1]])
             self._padded[trans] = (data, sources, starts)
         data, sources, starts = self._padded[trans]
+        data = data if rows is None else data[rows]
         return np.add.reduceat(data[:, :, None] * x[:, sources, :], starts, axis=1)
 
-    def solve(self, rhs, trans, refine=True):
+    def _extend(self, rhs, x, trans, rows=None):
+        """EXTENDED_REFINEMENT_STEPS mixed-precision refinement steps from x (permuted space, frequencies `rows`)."""
+        x_ext, rhs_ext = x.astype(np.clongdouble), rhs.astype(np.clongdouble)
+        for _ in range(EXTENDED_REFINEMENT_STEPS):
+            residual = (rhs_ext - self._apply_extended(x_ext, trans, rows)).astype(np.complex128)
+            x_ext = x_ext + self._solve(residual, trans, rows)
+        return x_ext.astype(np.complex128)
+
+    def _unpermute(self, x):
+        if self.perm is None:
+            return x
+        unpermuted = np.empty_like(x)
+        unpermuted[:, self.perm] = x
+        return unpermuted
+
+    def solve(self, rhs, trans, refine=True, needs_extended=None):
         """
         op(A_f)^-1 rhs[f] for every frequency f; rhs (F, n) or (F, n, k).
 
-        refine: False, True (REFINEMENT_STEPS steps, residual in float64) or "extended" (EXTENDED_REFINEMENT_STEPS
+        refine: False, True (REFINEMENT_STEPS steps, residual in float64), "extended" (EXTENDED_REFINEMENT_STEPS
         steps of mixed-precision refinement: residual and accumulated solution in np.longdouble, corrections from
-        the float64 factorisation).
+        the float64 factorisation), or "adaptive": two float64 steps, then the extended steps only for the
+        frequencies where needs_extended(x, dx) is True (x the solution, dx the last float64 correction, both
+        (F, n, k) in the original ordering; dx estimates the remaining error of x).
         """
         shape = rhs.shape
         rhs = np.asarray(rhs, dtype=np.complex128).reshape(shape[0], shape[1], -1)
@@ -382,18 +401,17 @@ class Factorisations:
             rhs = rhs[:, self.perm]
         x = self._solve(rhs, trans)
         if refine == "extended":
-            x_ext, rhs_ext = x.astype(np.clongdouble), rhs.astype(np.clongdouble)
-            for _ in range(EXTENDED_REFINEMENT_STEPS):
-                residual = (rhs_ext - self._apply_extended(x_ext, trans)).astype(np.complex128)
-                x_ext = x_ext + self._solve(residual, trans)
-            x = x_ext.astype(np.complex128)
+            x = self._extend(rhs, x, trans)
+        elif refine == "adaptive":
+            x = x + self._solve(rhs - self._apply(x, trans), trans)
+            dx = self._solve(rhs - self._apply(x, trans), trans)
+            x = x + dx
+            rows = np.flatnonzero(needs_extended(self._unpermute(x), self._unpermute(dx)))
+            if rows.size:
+                x[rows] = self._extend(rhs[rows], x[rows], trans, rows)
         for _ in range(REFINEMENT_STEPS if refine is True else 0):
             x = x + self._solve(rhs - self._apply(x, trans), trans)
-        if self.perm is not None:
-            unpermuted = np.empty_like(x)
-            unpermuted[:, self.perm] = x
-            x = unpermuted
-        return x.reshape(shape)
+        return self._unpermute(x).reshape(shape)
 
 
 def _no_csc(*args, **kwargs):

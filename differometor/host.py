@@ -38,6 +38,7 @@ import types
 import numpy as np
 import jax
 import jax.numpy as jnp
+from jax.custom_derivatives import SymbolicZero
 
 from differometor import adjoint as _adjoint
 from differometor import components as _components
@@ -56,7 +57,7 @@ Set to True before building to keep everything, e.g. to compare the host path wi
 NOISE_FACTOR = UNIT_VACUUM * H_PLANCK * F0 * 0.25
 """noise = sqrt(2 * S * NOISE_FACTOR), exactly as in `simulate`."""
 
-REFINE = {"signal": "extended", "weights": True, "adjoint": True}
+REFINE = {"signal": "adaptive", "weights": True, "adjoint": True}
 """
 Iterative refinement of the SuperLU solves: True = adjoint.REFINEMENT_STEPS step(s) with a float64 residual,
 "extended" = adjoint.EXTENDED_REFINEMENT_STEPS steps of mixed-precision refinement (residual in np.longdouble).
@@ -333,8 +334,15 @@ def _component_values(rows: np.ndarray, groups: tuple) -> np.ndarray:
     return np.concatenate(parts, axis=1)
 
 
-def _component_pullback(rows: np.ndarray, groups: tuple, outputs_bar: np.ndarray, rows_bar: np.ndarray) -> None:
-    """rows_bar[r, input] += Re(Σ_o outputs_bar[r, call, o] · ∂output_o/∂input), for all calls (in place)."""
+def _component_pullback(rows: np.ndarray, groups: tuple, outputs_bar: np.ndarray, rows_bar: np.ndarray,
+                        needed: np.ndarray | None = None) -> None:
+    """
+    rows_bar[r, input] += Re(Σ_o outputs_bar[r, call, o] · ∂output_o/∂input), for all calls (in place).
+
+    needed (bool per parameter column, optional): only input slots that hold a needed parameter in at least one call
+    are differentiated (the others' contributions are not used). Each dual-number direction is computed on its own,
+    so the needed entries of rows_bar are bitwise the same as with all slots.
+    """
     functions = numpy_functions()
     offset = 0
     r = rows.shape[0]
@@ -344,6 +352,8 @@ def _component_pullback(rows: np.ndarray, groups: tuple, outputs_bar: np.ndarray
             continue
         x = rows[:, inputs].reshape(r * k, -1).T                                 # (I, R*K_t)
         slots = _used_slots(function_type, x[:, : min(4, x.shape[1])])
+        if needed is not None and slots.size:
+            slots = slots[np.any(needed[inputs[:, slots]], axis=0)]
         offset += k
         if slots.size == 0:
             continue
@@ -583,7 +593,8 @@ def _forward(plan, optimized, parameters, carrier_values, signal_values):
 
     # one SuperLU factorisation per frequency (WS1), kept in the state for the backward pass
     factors = _adjoint.Factorisations(values, sp["rows"], sp["cols"], size)
-    x = factors.solve(rhs, "N", REFINE["signal"])                                      # A x = b
+    x = factors.solve(rhs, "N", REFINE["signal"],                                       # A x = b
+                      needs_extended=lambda x, dx: _needs_extended(g, carrier, x, dx))
     w = (factors.solve(np.swapaxes(c_rows, 1, 2), "H", REFINE["weights"]).swapaxes(1, 2)   # A^H w_d = c_d
          if c_rows.shape[1] else np.zeros(c_rows.shape, dtype=np.complex128))
     s["factors"] = factors
@@ -601,7 +612,19 @@ def _forward(plan, optimized, parameters, carrier_values, signal_values):
     return carrier.T, x.T, noise.T, s
 
 
-def _backward(plan, optimized, parameters, carrier_values, signal_values, carrier_bar_out, signal_bar, noise_bar, s=None):
+def _needed_parameters(plan) -> np.ndarray:
+    """Parameter columns that influence the optimized values' gradient: the optimized ones and the link targets of them."""
+    g = plan["global"]
+    size = int(max(g["optimized_parameter_indices"].max(initial=0), g["linked_indices"].max(initial=0),
+                   g["indices_to_link"].max(initial=0), g["qhd_parameter_indices"].max(initial=0))) + 1
+    needed = np.zeros(size, dtype=bool)
+    needed[g["optimized_parameter_indices"]] = True
+    needed[g["indices_to_link"][needed[g["linked_indices"]]]] = True     # identity/sqrt links: one level
+    return needed
+
+
+def _backward(plan, optimized, parameters, carrier_values, signal_values, carrier_bar_out, signal_bar, noise_bar, s=None,
+              only_optimized=False):
     g, cp, sp, npn = plan["global"], plan["carrier"], plan["signal"], plan["noise"]
     if s is None:                                                   # no cached forward state: recompute
         _, _, _, s = _forward(plan, optimized, parameters, carrier_values, signal_values)
@@ -666,12 +689,17 @@ def _backward(plan, optimized, parameters, carrier_values, signal_values, carrie
 
     # component Jacobians -> parameter rows
     ps_bar = np.zeros(ps.shape, dtype=np.complex128)
-    _component_pullback(ps, sp["groups"], ys_bar, ps_bar)
+    needed = None
+    if only_optimized:                       # only the optimized values are differentiated (custom_vjp symbolic zeros)
+        needed = np.zeros(ps.shape[1], dtype=bool)
+        mask = _needed_parameters(plan)
+        needed[: mask.size] = mask[: ps.shape[1]]
+    _component_pullback(ps, sp["groups"], ys_bar, ps_bar, needed)
     yn_bar = np.zeros((q_bar.shape[0], sum(gr.shape[0] for gr in npn["groups"]) * 4), dtype=np.complex128)
     np.add.at(yn_bar, (slice(None), npn["outputs"]), q_bar[:, : npn["outputs"].shape[0]])
-    _component_pullback(s["pn"], npn["groups"], yn_bar, ps_bar[: s["pn"].shape[0]])
+    _component_pullback(s["pn"], npn["groups"], yn_bar, ps_bar[: s["pn"].shape[0]], needed)
     pc_bar = np.zeros(pc.shape, dtype=np.complex128)
-    _component_pullback(pc, cp["groups"], yc_bar, pc_bar)
+    _component_pullback(pc, cp["groups"], yc_bar, pc_bar, needed)
 
     # parameter expansion, qhd phases, linking, optimized values
     signal_values_bar, pc_bar_from_signal = _expand_pullback(
@@ -773,14 +801,22 @@ def _simulate(plan, optimized, parameters, carrier_values, signal_values):
 
 
 def _simulate_fwd(plan, optimized, parameters, carrier_values, signal_values):
-    carrier, signal, noise = _call_forward(plan, optimized, parameters, carrier_values, signal_values)
-    return (carrier, signal, noise.squeeze()), (optimized, parameters, carrier_values, signal_values)
+    # symbolic_zeros=True: each argument is a CustomVJPPrimal (value, perturbed). Which inputs are differentiated is
+    # static; it travels to bwd as the shape of an empty residual array.
+    primals = (optimized, parameters, carrier_values, signal_values)
+    values = tuple(x.value for x in primals)
+    perturbed = jnp.zeros((0,) + tuple(int(bool(x.perturbed)) for x in primals))
+    carrier, signal, noise = _call_forward(plan, *values)
+    return (carrier, signal, noise.squeeze()), (*values, perturbed)
 
 
 def _simulate_bwd(plan, residuals, cotangents):
-    optimized, parameters, carrier_values, signal_values = residuals
-    carrier_bar, signal_bar, noise_bar = cotangents
+    optimized, parameters, carrier_values, signal_values, perturbed = residuals
+    perturbed = [bool(b) for b in perturbed.shape[1:]]
+    only_optimized = perturbed[0] and not any(perturbed[1:])
     shapes = _output_shapes(plan, carrier_values, signal_values)
+    cotangents = tuple(jnp.zeros(ct.aval.shape, ct.aval.dtype) if type(ct) is SymbolicZero else ct for ct in cotangents)
+    carrier_bar, signal_bar, noise_bar = cotangents
     in_shapes = [optimized.shape, parameters.shape, carrier_values.shape, signal_values.shape]
     ct_shapes = [s.shape for s in shapes]
 
@@ -791,7 +827,7 @@ def _simulate_bwd(plan, residuals, cotangents):
         packed = np.asarray(packed)
         o, p, c, s, cb, sb, nb = _unpack(packed, in_shapes + ct_shapes)
         cached = _LAST_FORWARD["state"] if _LAST_FORWARD["key"] == _input_key(plan, packed[:input_size]) else None
-        grads = _backward(plan, o.real, p, c, s.real, cb, sb, nb.real, s=cached)
+        grads = _backward(plan, o.real, p, c, s.real, cb, sb, nb.real, s=cached, only_optimized=only_optimized)
         return tuple(
             (np.asarray(gr) if np.issubdtype(dt, np.complexfloating) else np.real(gr)).astype(dt)
             for gr, dt in zip(grads, dtypes)
@@ -801,10 +837,11 @@ def _simulate_bwd(plan, residuals, cotangents):
     result_shapes = tuple(jax.ShapeDtypeStruct(a.shape, a.dtype) for a in (optimized, parameters, carrier_values, signal_values))
     packed = _pack(optimized, parameters, carrier_values, signal_values,
                    carrier_bar, signal_bar, jnp.reshape(noise_bar, ct_shapes[2]))
-    return jax.pure_callback(host, result_shapes, packed, vmap_method="sequential")
+    grads = jax.pure_callback(host, result_shapes, packed, vmap_method="sequential")
+    return tuple(gr if d else None for gr, d in zip(grads, perturbed))      # None: zero cotangent (not differentiated)
 
 
-_simulate.defvjp(_simulate_fwd, _simulate_bwd)
+_simulate.defvjp(_simulate_fwd, _simulate_bwd, symbolic_zeros=True)
 
 
 def simulate(plan, optimized_parameters, parameters, carrier_changing_values, signal_changing_values):
@@ -884,3 +921,41 @@ def _power_detector_bwd(solution, y_bar):
 
 
 power_detector.defvjp(_power_detector_fwd, _power_detector_bwd)
+
+
+SIGNAL_ERROR_TOLERANCE = 1e-8
+"""
+Adaptive refinement of the signal solve (REFINE["signal"] = "adaptive"): frequencies whose estimated relative error
+of the detected signal exceeds this get the mixed-precision (longdouble) refinement steps; the others keep two
+float64 refinement steps.
+"""
+
+
+def _needs_extended(g, carrier, x, dx):
+    """
+    Per frequency: does the detected signal need mixed-precision refinement?
+
+    The detectors are the non-zero positions p (upper sideband) of the noise selection vectors; a signal detector
+    reads sig_p = conj(c_p) x_p + c_p x_{p+n} (n = carrier size). With dx the last float64 correction (an estimate of
+    the remaining error of x), the error of sig_p is about |c_p| (|dx_p| + |dx_{p+n}|). It is compared with |sig_p|
+    and, for balanced read-outs, with |sig_i - sig_j| and |sig_i + sig_j|: on Voyager in frequency-modulation mode the
+    entries are accurate to ~1e-12 but the read-out cancels by ~1e10, which only this estimate sees. Setups without
+    detector positions always get the extended steps (conservative).
+    """
+    rows, size = x.shape[0], x.shape[1]
+    cn = carrier.shape[1]
+    detectors = np.flatnonzero(np.abs(g["noise_selection_vectors"]).sum(axis=(0, 1))[:cn] > 0)
+    if detectors.size == 0 or size < 2 * cn:
+        return np.ones(rows, dtype=bool)
+    c = carrier if carrier.shape[0] == rows else np.broadcast_to(carrier[:1], (rows, cn))
+    cp = c[:, detectors]
+    xu, xl = x[:, detectors, 0], x[:, detectors + cn, 0]
+    sig = np.conj(cp) * xu + cp * xl                                                       # (R, P)
+    err = np.abs(cp) * (np.abs(dx[:, detectors, 0]) + np.abs(dx[:, detectors + cn, 0]))
+    scale = np.abs(sig)
+    if detectors.size > 1:
+        i, j = np.triu_indices(detectors.size, 1)
+        scale = np.concatenate([scale, np.abs(sig[:, i] - sig[:, j]), np.abs(sig[:, i] + sig[:, j])], axis=1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        estimate = err.max(axis=1) / scale.min(axis=1)
+    return ~(estimate <= SIGNAL_ERROR_TOLERANCE)
