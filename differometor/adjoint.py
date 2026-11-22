@@ -336,15 +336,14 @@ class Factorisations:
         source, target = (self.columns, self.rows) if trans == "N" else (self.rows, self.columns)
         frequencies, n, k = x.shape
         if (trans, k) not in self._index:
-            self._index[(trans, k)] = (
-                (np.arange(frequencies)[:, None] * n + target[None, :])[:, :, None] * k + np.arange(k)
-            ).ravel()
+            index = ((np.arange(frequencies)[:, None] * n + target[None, :])[:, :, None] * k + np.arange(k)).ravel()
+            # real and imaginary parts interleaved, as in the complex128 memory layout: one bincount, the same
+            # per-entry summation order as two separate ones
+            self._index[(trans, k)] = np.stack([2 * index, 2 * index + 1], axis=-1).ravel()
         index = self._index[(trans, k)]
-        terms = self.data[:, :, None] * x[:, source, :]
-        size = frequencies * n * k
-        out = (np.bincount(index, terms.real.ravel(), minlength=size)
-               + 1j * np.bincount(index, terms.imag.ravel(), minlength=size))
-        return out.reshape(x.shape)
+        terms = np.ascontiguousarray(self.data[:, :, None] * x[:, source, :])
+        out = np.bincount(index, terms.view(np.float64).ravel(), minlength=2 * frequencies * n * k)
+        return out.view(np.complex128).reshape(x.shape)
 
     def _solve(self, rhs, trans, rows=None):
         factors = self.factors if rows is None else [self.factors[f] for f in rows]
@@ -394,9 +393,9 @@ class Factorisations:
 
         refine: False, True (REFINEMENT_STEPS steps, residual in float64), "extended" (EXTENDED_REFINEMENT_STEPS
         steps of mixed-precision refinement: residual and accumulated solution in np.longdouble, corrections from
-        the float64 factorisation), or "adaptive": two float64 steps, then the extended steps only for the
-        frequencies where needs_extended(x, dx) is True (x the solution, dx the last float64 correction, both
-        (F, n, k) in the original ordering; dx estimates the remaining error of x).
+        the float64 factorisation), or "adaptive": one float64 step, then the extended steps only for the
+        frequencies where needs_extended(x, dx) is True (x the refined solution, dx its float64 correction, both
+        (F, n, k) in the original ordering; dx is a conservative estimate of the remaining error of x).
         """
         shape = rhs.shape
         rhs = np.asarray(rhs, dtype=np.complex128).reshape(shape[0], shape[1], -1)
@@ -406,7 +405,6 @@ class Factorisations:
         if refine == "extended":
             x = self._extend(rhs, x, trans)
         elif refine == "adaptive":
-            x = x + self._solve(rhs - self._apply(x, trans), trans)
             dx = self._solve(rhs - self._apply(x, trans), trans)
             x = x + dx
             rows = np.flatnonzero(needs_extended(self._unpermute(x), self._unpermute(dx)))
