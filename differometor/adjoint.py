@@ -71,7 +71,10 @@ def signal_pattern(signal_matrix, signal_matrix_indices) -> tuple[np.ndarray, np
     rows = np.mod(rows, n)                          # guard: negative rows would duplicate entries
     cols = np.mod(cols, n + 1)                      # -1 -> n (right-hand side column)
     in_matrix = cols < n
-    flat = np.concatenate([np.flatnonzero(base[:, :n]), rows[in_matrix] * n + cols[in_matrix]])
+    # Non-zeros of base[:, :n], scanned on the whole (contiguous) matrix: the slice would be copied first (~9 MB).
+    base_rows, base_cols = np.divmod(np.flatnonzero(base), base.shape[1])
+    keep = base_cols < n
+    flat = np.concatenate([base_rows[keep] * n + base_cols[keep], rows[in_matrix] * n + cols[in_matrix]])
     flat = np.unique(flat)                          # unique => scatter-set == scatter-add
     return (flat // n).astype(np.int32), (flat % n).astype(np.int32)
 
@@ -105,10 +108,13 @@ def pattern_arrays(simulation_arrays: dict, as_jax: bool = True) -> dict:
         return {}
     rows, cols = signal_pattern(signal_matrix, simulation_arrays["signal_matrix_indices"])
 
-    # Base noise matrix with the update positions removed (exactly what `.at[].set` leaves).
-    base = noise_matrix.copy()
-    base[q_rows, q_cols] = 0
-    base_rows, base_cols = np.nonzero(base)
+    # Base noise matrix with the update positions removed (exactly what `.at[].set` leaves): its non-zeros, minus
+    # the update positions (row-major order, as np.nonzero; without copying the ~9 MB matrix).
+    if q_rows.size and (q_rows.max() >= n or q_cols.max() >= n):
+        return {}
+    flat = np.flatnonzero(noise_matrix)
+    flat = flat[~np.isin(flat, q_rows.astype(np.int64) * n + q_cols.astype(np.int64))]
+    base_rows, base_cols = np.divmod(flat, n)
 
     # Noise functions (vacuum, loss, squeezer) do not depend on frequency. Unless a swept
     # parameter is one of their inputs, all expanded parameter rows give the same values.
@@ -153,12 +159,14 @@ def _csc_structure(rows, cols, n):
     return order, rows[order], np.cumsum(indptr)
 
 
-SUPERLU_OPTIONS = dict(ColPerm="COLAMD", PanelSize=4, Relax=4)
+SUPERLU_OPTIONS = dict(ColPerm="COLAMD", PanelSize=4, Relax=1)
 """
 COLAMD ordering as `splu`'s default, with smaller supernode panel and relaxation sizes than SuperLU's defaults, which
 suit these small, very sparse systems: factorisation of the 101 benchmark
 systems 90.8 -> 76.2 ms with identical accuracy (refined W vs dense LU 1.4e-8 uifo, 1.6e-13 Voyager).
-Pivoting is unchanged (a pivot threshold of 0.1 was 9 ms faster but was not adopted).
+Pivoting is unchanged (a pivot threshold of 0.1 was 9 ms faster but was not adopted). the-prime-model-nada: Relax=1 (no
+relaxed supernodes): factorisation + 9 solve passes 151 -> 120 ms in an interleaved in-process sweep (PanelSize 1-8
+barely matters at Relax=1); round-off-level differences only.
 """
 
 REFINEMENT_STEPS = 1
@@ -170,8 +178,57 @@ Without it the SuperLU noise weights of Voyager (an example setup, not scored) d
 Cost: one sparse product + one triangular solve per frequency.
 """
 
-EXTENDED_REFINEMENT_STEPS = 2
-"""Steps of mixed-precision refinement (residual in np.longdouble) for solves called with refine="extended"."""
+EXTENDED_REFINEMENT_STEPS = 3
+"""
+Steps of mixed-precision refinement for refine="extended" and for the frequencies the adaptive mode flags: residual
+and accumulated solution in double-double (pairs of float64, ~32 significant digits), corrections from the float64
+factorisation.
+
+Until the-prime-model-nada the residual was computed in np.longdouble (80-bit on x86, plain float64 elsewhere). On
+Voyager in frequency-modulation mode (cond 5.7e11, read-out cancellation ~1e10) that left the iterates jittering by
+~5e-13 normwise from step to step, which the read-out turns into ~1e-5 in ln S: the 6-step high-accuracy reference
+itself moved 7.4e-6 between 6 and 7 steps, and the same code landed 8.3e-6 or 1.1e-5 from it depending on the
+platform's rounding. With double-double residuals the steps converge to the correctly rounded solution (3 steps from
+the float64-refined start), on every platform.
+"""
+
+
+# Double-double arithmetic (error-free transformations in float64; NumPy rounds every ufunc result to float64, so
+# they are exact as written).
+_SPLITTER = 134217729.0  # 2**27 + 1, Veltkamp/Dekker splitting
+
+
+def _two_sum(a, b):
+    """s, e with s = fl(a + b) and s + e = a + b exactly (Knuth)."""
+    s = a + b
+    v = s - a
+    return s, (a - (s - v)) + (b - v)
+
+
+def _two_prod(a, b):
+    """p, e with p = fl(a * b) and p + e = a * b exactly (Dekker; needs no fused multiply-add)."""
+    p = a * b
+    t = _SPLITTER * a
+    a_hi = t - (t - a)
+    a_lo = a - a_hi
+    t = _SPLITTER * b
+    b_hi = t - (t - b)
+    b_lo = b - b_hi
+    return p, ((a_hi * b_hi - p) + a_hi * b_lo + a_lo * b_hi) + a_lo * b_lo
+
+
+def _dd_add(hi, lo, d):
+    """(hi + lo) + d for complex double-double numbers and a float64 correction d, renormalised (hi = fl(hi + lo))."""
+    out_hi, out_lo = np.empty(hi.shape, dtype=np.complex128), np.empty(hi.shape, dtype=np.complex128)
+    s, e = _two_sum(hi.real, d.real)
+    e = e + lo.real
+    out_hi.real = s + e
+    out_lo.real = e - (out_hi.real - s)
+    s, e = _two_sum(hi.imag, d.imag)
+    e = e + lo.imag
+    out_hi.imag = s + e
+    out_lo.imag = e - (out_hi.imag - s)
+    return out_hi, out_lo
 
 
 _SUPERLU = None
@@ -216,6 +273,24 @@ All systems share one sparsity pattern, so COLAMD returns the same order each ti
 symmetrically (B = P^T A P, rows and columns, so the diagonal SuperLU's pivot search prefers stays the same) and
 factorised with ColPerm=NATURAL: same fill (nnz(L+U) 9845), 101 factorisations 80 -> 67 ms. Not bit-identical to
 per-frequency COLAMD (round-off level, 6e-8 relative on the raw solves; refinement and the accuracy gates as before).
+"""
+
+
+BLOCK_DIAGONAL = True
+"""
+Factorise the F systems as one block-diagonal matrix diag(A_1, ..., A_F) with a single SuperLU call, and solve all
+frequencies with one call per pass (the-prime-model-nada). Requires the reused natural ordering (REUSE_ORDERING):
+SuperLU's column elimination tree is then a forest of the per-frequency trees, its postorder keeps every block
+contiguous, pivoting and supernodes stay inside a block, so the factors and solutions are bitwise identical to
+per-frequency calls (checked on the benchmark systems and on all 20 inputs of scripts/scenarios.py); it only saves
+the per-call overhead of 101 factorisations and ~800 solves: warm, factorisation 24.7 -> 21.7 ms and ~0.45 ms per
+solve pass; in the official first run (fresh process) ~12 ms. Frequencies solved on their own (the mixed-precision
+steps of the adaptive mode) get zero right-hand sides in the other blocks.
+
+Tried with it and not adopted (the-prime-model-nada): residual products with SciPy's compiled CSR kernel
+(`scipy.sparse._sparsetools.csr_matvecs`, loadable on its own like SuperLU) instead of gather + bincount: faster in
+isolation, no gain in the official run (0.547 vs 0.550 s, interleaved), and not bitwise identical (complex multiply
+rounding).
 """
 
 
@@ -320,11 +395,19 @@ class Factorisations:
         self.data = np.ascontiguousarray(vals[:, order], dtype=np.complex128)   # (F, nnz), CSC order
         self.rows, self.columns = indices, np.repeat(np.arange(n), np.diff(indptr))
         indices, indptr = indices.astype(np.intc), indptr.astype(np.intc)
-        self.factors = [_gstrf(n, self.data[f], indices, indptr, options) for f in range(vals.shape[0])]
+        frequencies, nnz = self.data.shape
+        self.frequencies, self.block, self.factors = frequencies, None, None
+        if BLOCK_DIAGONAL and options.get("ColPerm") == "NATURAL" and frequencies > 1 and frequencies * nnz < 2**31 - 1:
+            block_indices = (indices[None, :] + (np.arange(frequencies) * n)[:, None]).ravel()
+            block_indptr = np.concatenate([[0], (indptr[1:][None, :] + (np.arange(frequencies) * nnz)[:, None]).ravel()])
+            self.block = _gstrf(frequencies * n, self.data.ravel(), block_indices.astype(np.intc),
+                                block_indptr.astype(np.intc), options)
+        else:
+            self.factors = [_gstrf(n, self.data[f], indices, indptr, options) for f in range(frequencies)]
         self._index, self._padded = {}, {}
 
     def __len__(self):
-        return len(self.factors)
+        return self.frequencies
 
     def _apply(self, x, trans):
         """op(A_f) x[f] for all f; x (F, n, k)."""
@@ -333,23 +416,32 @@ class Factorisations:
         source, target = (self.columns, self.rows) if trans == "N" else (self.rows, self.columns)
         frequencies, n, k = x.shape
         if (trans, k) not in self._index:
-            self._index[(trans, k)] = (
-                (np.arange(frequencies)[:, None] * n + target[None, :])[:, :, None] * k + np.arange(k)
-            ).ravel()
+            index = ((np.arange(frequencies)[:, None] * n + target[None, :])[:, :, None] * k + np.arange(k)).ravel()
+            # real and imaginary parts interleaved, as in the complex128 memory layout: one bincount, the same
+            # per-entry summation order as two separate ones
+            self._index[(trans, k)] = np.stack([2 * index, 2 * index + 1], axis=-1).ravel()
         index = self._index[(trans, k)]
-        terms = self.data[:, :, None] * x[:, source, :]
-        size = frequencies * n * k
-        out = (np.bincount(index, terms.real.ravel(), minlength=size)
-               + 1j * np.bincount(index, terms.imag.ravel(), minlength=size))
-        return out.reshape(x.shape)
+        terms = np.ascontiguousarray(self.data[:, :, None] * x[:, source, :])
+        out = np.bincount(index, terms.view(np.float64).ravel(), minlength=2 * frequencies * n * k)
+        return out.view(np.complex128).reshape(x.shape)
 
-    def _solve(self, rhs, trans):
-        return np.stack([lu.solve(rhs[f], trans=trans) for f, lu in enumerate(self.factors)])
+    def _solve(self, rhs, trans, rows=None):
+        """op(A_f)^-1 rhs[i] for the frequencies f = rows[i] (default all); rhs (F', n, k)."""
+        if self.block is not None:
+            full = rhs
+            if rows is not None:        # only some frequencies: the others get a zero right-hand side (blocks are independent)
+                full = np.zeros((self.frequencies,) + rhs.shape[1:], dtype=np.complex128)
+                full[rows] = rhs
+            x = self.block.solve(np.ascontiguousarray(full).reshape(self.frequencies * self.n, -1), trans=trans)
+            x = x.reshape(full.shape)
+            return x if rows is None else x[rows]
+        factors = self.factors if rows is None else [self.factors[f] for f in rows]
+        return np.stack([lu.solve(rhs[i], trans=trans) for i, lu in enumerate(factors)])
 
-    def _apply_extended(self, x, trans):
-        """op(A_f) x[f] in extended precision (np.clongdouble); x (F, n, k) clongdouble. Products sorted by output row."""
+    def _apply_extended(self, x, trans, rows=None):
+        """op(A_f) x[f] in extended precision (np.clongdouble) for the frequencies `rows` (default all); x (F', n, k)."""
         if trans == "H":
-            return np.conj(self._apply_extended(np.conj(x), "T"))
+            return np.conj(self._apply_extended(np.conj(x), "T", rows))
         if trans not in self._padded:
             source, target = (self.columns, self.rows) if trans == "N" else (self.rows, self.columns)
             order = np.argsort(target, kind="stable")
@@ -366,15 +458,96 @@ class Factorisations:
                 starts = np.concatenate([[0], np.cumsum(np.maximum(counts, 1))[:-1]])
             self._padded[trans] = (data, sources, starts)
         data, sources, starts = self._padded[trans]
+        data = data if rows is None else data[rows]
         return np.add.reduceat(data[:, :, None] * x[:, sources, :], starts, axis=1)
 
-    def solve(self, rhs, trans, refine=True):
+    def _dd_layout(self, trans):
+        """
+        op(A)'s entries row by row, padded to the longest row, for the double-double residual: (positions into the
+        columns of self.data, source columns), each (n, width). Padding points at an extra zero coefficient (index nnz).
+        """
+        key = ("dd", trans)
+        if key not in self._padded:
+            source, target = (self.columns, self.rows) if trans == "N" else (self.rows, self.columns)
+            order = np.argsort(target, kind="stable")
+            counts = np.bincount(target, minlength=self.n)
+            starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
+            row = target[order]
+            slot = np.arange(order.size) - starts[row]
+            positions = np.full((self.n, max(int(counts.max()), 1)), self.data.shape[1], dtype=np.int64)
+            sources = np.zeros(positions.shape, dtype=np.int64)
+            positions[row, slot] = order
+            sources[row, slot] = source[order]
+            self._padded[key] = (positions, sources)
+        return self._padded[key]
+
+    def _residual_dd(self, rhs, x_hi, x_lo, trans, rows=None):
+        """rhs - op(A_f) (x_hi + x_lo) for the frequencies `rows` (default all), accumulated in double-double and
+        rounded to float64 once; rhs, x_hi, x_lo (F', n, k)."""
+        if trans == "H":
+            return np.conj(self._residual_dd(np.conj(rhs), np.conj(x_hi), np.conj(x_lo), "T", rows))
+        positions, sources = self._dd_layout(trans)
+        data = self.data if rows is None else self.data[rows]
+        data = np.concatenate([data, np.zeros((data.shape[0], 1), dtype=np.complex128)], axis=1)
+        sum_re, low_re = np.zeros(x_hi.shape), np.zeros(x_hi.shape)
+        sum_im, low_im = np.zeros(x_hi.shape), np.zeros(x_hi.shape)
+        for m in range(positions.shape[1]):
+            a = data[:, positions[:, m]][:, :, None]
+            hi, lo = x_hi[:, sources[:, m], :], x_lo[:, sources[:, m], :]
+            p1, e1 = _two_prod(a.real, hi.real)
+            p2, e2 = _two_prod(a.imag, hi.imag)
+            p3, e3 = _two_prod(a.real, hi.imag)
+            p4, e4 = _two_prod(a.imag, hi.real)
+            t_re, c_re = _two_sum(p1, -p2)
+            t_im, c_im = _two_sum(p3, p4)
+            small = a * lo                       # x_lo ~ 1e-16 |x|: rounding of these products is below double-double
+            sum_re, c = _two_sum(sum_re, t_re)
+            low_re = low_re + (c + (c_re + (e1 - e2) + small.real))
+            sum_im, c = _two_sum(sum_im, t_im)
+            low_im = low_im + (c + (c_im + (e3 + e4) + small.imag))
+        out = np.empty(x_hi.shape, dtype=np.complex128)
+        r, c = _two_sum(rhs.real, -sum_re)
+        out.real = r + (c - low_re)
+        r, c = _two_sum(rhs.imag, -sum_im)
+        out.imag = r + (c - low_im)
+        return out
+
+    def _extend(self, rhs, x, trans, rows=None):
+        """
+        EXTENDED_REFINEMENT_STEPS mixed-precision refinement steps from x (permuted space, frequencies `rows`): residual
+        and solution in double-double, corrections from the float64 factorisation.
+        """
+        data = self.data if rows is None else self.data[rows]
+        moderate = all(np.isfinite(v).all() and float(np.max(np.abs(v), initial=0.0)) < 1e250 for v in (x, rhs, data))
+        if not moderate:
+            # non-finite (singular frequency) or huge input, where splitting could overflow: the np.longdouble steps
+            x_ext, rhs_ext = x.astype(np.clongdouble), rhs.astype(np.clongdouble)
+            for _ in range(EXTENDED_REFINEMENT_STEPS):
+                residual = (rhs_ext - self._apply_extended(x_ext, trans, rows)).astype(np.complex128)
+                x_ext = x_ext + self._solve(residual, trans, rows)
+            return x_ext.astype(np.complex128)
+        x_hi, x_lo = np.array(x, dtype=np.complex128), np.zeros(x.shape, dtype=np.complex128)
+        for _ in range(EXTENDED_REFINEMENT_STEPS):
+            residual = self._residual_dd(rhs, x_hi, x_lo, trans, rows)
+            x_hi, x_lo = _dd_add(x_hi, x_lo, self._solve(residual, trans, rows))
+        return x_hi
+
+    def _unpermute(self, x):
+        if self.perm is None:
+            return x
+        unpermuted = np.empty_like(x)
+        unpermuted[:, self.perm] = x
+        return unpermuted
+
+    def solve(self, rhs, trans, refine=True, needs_extended=None):
         """
         op(A_f)^-1 rhs[f] for every frequency f; rhs (F, n) or (F, n, k).
 
-        refine: False, True (REFINEMENT_STEPS steps, residual in float64) or "extended" (EXTENDED_REFINEMENT_STEPS
-        steps of mixed-precision refinement: residual and accumulated solution in np.longdouble, corrections from
-        the float64 factorisation).
+        refine: False, True (REFINEMENT_STEPS steps, residual in float64), "extended" (EXTENDED_REFINEMENT_STEPS
+        steps of mixed-precision refinement: residual and accumulated solution in double-double, corrections from
+        the float64 factorisation), or "adaptive": one float64 step, then the extended steps only for the
+        frequencies where needs_extended(x, dx) is True (x the refined solution, dx its float64 correction, both
+        (F, n, k) in the original ordering; dx is a conservative estimate of the remaining error of x).
         """
         shape = rhs.shape
         rhs = np.asarray(rhs, dtype=np.complex128).reshape(shape[0], shape[1], -1)
@@ -382,18 +555,16 @@ class Factorisations:
             rhs = rhs[:, self.perm]
         x = self._solve(rhs, trans)
         if refine == "extended":
-            x_ext, rhs_ext = x.astype(np.clongdouble), rhs.astype(np.clongdouble)
-            for _ in range(EXTENDED_REFINEMENT_STEPS):
-                residual = (rhs_ext - self._apply_extended(x_ext, trans)).astype(np.complex128)
-                x_ext = x_ext + self._solve(residual, trans)
-            x = x_ext.astype(np.complex128)
+            x = self._extend(rhs, x, trans)
+        elif refine == "adaptive":
+            dx = self._solve(rhs - self._apply(x, trans), trans)
+            x = x + dx
+            rows = np.flatnonzero(needs_extended(self._unpermute(x), self._unpermute(dx)))
+            if rows.size:
+                x[rows] = self._extend(rhs[rows], x[rows], trans, rows)
         for _ in range(REFINEMENT_STEPS if refine is True else 0):
             x = x + self._solve(rhs - self._apply(x, trans), trans)
-        if self.perm is not None:
-            unpermuted = np.empty_like(x)
-            unpermuted[:, self.perm] = x
-            x = unpermuted
-        return x.reshape(shape)
+        return self._unpermute(x).reshape(shape)
 
 
 def _no_csc(*args, **kwargs):

@@ -104,33 +104,50 @@ def _signal_plan(signal_matrix, matrix_indices, flat_outputs, carrier_indices, p
     # With duplicate positions, the result of `.at[].set` depends on scatter order. Keep the original path then.
     if _has_duplicates(write_rows, write_columns, width) or _has_duplicates(place_rows, place_columns, width):
         return None
-    if carrier_indices.shape[0] != place_rows.shape[0]:
+    if carrier_indices.shape[0] != place_rows.shape[0] or base.shape != (size, width):
         return None
 
-    source = np.full((size, width), -1, dtype=np.int64)
-    source[write_rows, write_columns] = flat_outputs
-    scale = np.full((size, width), -1, dtype=np.int64)
-    scale[place_rows, place_columns] = carrier_indices
-    conjugate = np.zeros((size, width), dtype=bool)
-    c = carrier_size
-    conjugate[c : 2 * c, c : 2 * c] = True
-    conjugate[2 * c :, :c] = True
-    conjugate[c : 2 * c, 2 * c :] = True
+    # Candidate positions, row-major: non-zeros of the base, written positions (source >= 0) and carrier-scaled
+    # positions (scale >= 0). Computed on the positions themselves instead of dense (N, N+1) maps (three ~5 MB
+    # arrays and a dense scan in the benchmark); same positions, order and values.
+    flat_outputs = np.asarray(flat_outputs).astype(np.int64).reshape(-1)
+    write_flat = write_rows * width + write_columns
+    place_flat = place_rows * width + place_columns
+    flat = np.unique(np.concatenate([
+        np.flatnonzero(base),
+        write_flat[flat_outputs >= 0],
+        place_flat[carrier_indices >= 0],
+    ]))                                                     # sorted = row-major order
 
-    candidate = (base != 0) | (source >= 0) | (scale >= 0)
-    rows, columns = np.nonzero(candidate)  # row-major order
+    def lookup(keys, values):
+        """values[k] at the candidate position equal to keys[k] (keys unique), -1 elsewhere: dense map[rows, columns]."""
+        out = np.full(flat.shape, -1, dtype=np.int64)
+        at = np.searchsorted(flat, keys)
+        found = at < flat.size
+        found[found] = flat[at[found]] == keys[found]
+        out[at[found]] = values[found]
+        return out
+
+    source, scale = lookup(write_flat, flat_outputs), lookup(place_flat, carrier_indices)
+    rows, columns = np.divmod(flat, width)
     in_matrix = columns < size
     order = np.concatenate([np.flatnonzero(in_matrix), np.flatnonzero(~in_matrix)])
-    rows, columns = rows[order], columns[order]
+    rows, columns, source, scale = rows[order], columns[order], source[order], scale[order]
 
+    c = carrier_size
+    conjugate = (
+        ((rows >= c) & (rows < 2 * c) & (columns >= c) & (columns < 2 * c))
+        | ((rows >= 2 * c) & (columns < c))
+        | ((rows >= c) & (rows < 2 * c) & (columns >= 2 * c))
+    )
     return {
         "rows": rows[: in_matrix.sum()].astype(np.int32),
         "cols": columns[: in_matrix.sum()].astype(np.int32),
         "rhs_rows": rows[in_matrix.sum() :].astype(np.int32),
-        "source": source[rows, columns].astype(np.int32),
+        "source": source.astype(np.int32),
         "base": base[rows, columns].astype(np.complex128),
-        "scale": scale[rows, columns].astype(np.int32),
-        "conjugate": conjugate[rows, columns],
+        "scale": scale.astype(np.int32),
+        "conjugate": conjugate,
     }
 
 

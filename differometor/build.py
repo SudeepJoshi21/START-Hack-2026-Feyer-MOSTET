@@ -105,7 +105,7 @@ Notes
 # without changing a single bit of the outputs.
 
 
-def _host_array(value, dtype=None) -> np.ndarray:
+def _host_array(value, dtype=None, copy=True) -> np.ndarray:
     """
     The NumPy array that `jnp.array(value, dtype=dtype)` would hold: same values, shape and (canonical) dtype.
 
@@ -113,9 +113,12 @@ def _host_array(value, dtype=None) -> np.ndarray:
     shape/dtype. The build stays in NumPy; `run_build_step` moves every array to the device in one
     batched `jax.device_put` at the end (one call instead of ~35 single transfers, and no transfers
     back to the host for the plan builders in between).
+
+    `copy=False` only for arrays that `build` created itself and no longer uses (the dense base matrices, ~9 MB
+    each in the benchmark): copying them protects nothing.
     """
     # a copy, like the device transfer it replaces: the build later modifies some index arrays in place
-    array = np.array(value, dtype=None if dtype is None else jax.dtypes.canonicalize_dtype(dtype), copy=True)
+    array = np.array(value, dtype=None if dtype is None else jax.dtypes.canonicalize_dtype(dtype), copy=True if copy else None)
     canonical = jax.dtypes.canonicalize_dtype(array.dtype)
     return array if array.dtype == canonical else array.astype(canonical)
 
@@ -704,8 +707,10 @@ def build(setup: Setup):
     detectors = {}
 
     # Carrier matrix: identity on the left block, with a separate right-hand-side column.
+    # (The identity is written on the diagonal only: same values as copying in np.eye, without building and copying
+    # a dense identity. The signal matrix below likewise; 751 x 752 complex in the benchmark.)
     carrier_matrix = np.zeros((system_size, system_size + 1), dtype=complex)
-    carrier_matrix[:, :system_size] = np.eye(system_size, dtype=complex)
+    carrier_matrix[np.arange(system_size), np.arange(system_size)] = 1
 
     # Space propagation entries are evaluated in one batched call after the edge loop
     # (see `_apply_space_entries`); entries: ((row, col), [F, length, refractive_index]).
@@ -717,10 +722,11 @@ def build(setup: Setup):
 
     # Signal matrix includes two carrier-sized blocks plus appended signal block, plus a right-hand-side column.
     signal_matrix = np.zeros((system_size * 2 + signal_size, system_size * 2 + signal_size + 1), dtype=complex)
-    signal_matrix[:, : system_size * 2 + signal_size] = np.eye(system_size * 2 + signal_size, dtype=complex)
+    signal_matrix[np.arange(system_size * 2 + signal_size), np.arange(system_size * 2 + signal_size)] = 1
 
-    # Noise matrix has the same shape as the signal matrix without the right-hand side.
-    noise_matrix = np.zeros(signal_matrix[:, :-1].shape)
+    # Noise matrix has the same shape as the signal matrix without the right-hand side. It stays zero here (noise
+    # entries come from the noise instructions); created complex, the dtype it is returned with, so no converted copy.
+    noise_matrix = np.zeros(signal_matrix[:, :-1].shape, dtype=complex)
     noise_detectors = {}
 
     # Selection vectors map fields to detector readouts for quantum noise calculations.
@@ -1486,9 +1492,9 @@ def build(setup: Setup):
         (carrier_instructions, signal_instructions, noise_instructions, signal_components, parameter_names),
         (
             _host_array([parameters], dtype=complex),
-            _host_array(carrier_matrix),
-            _host_array(signal_matrix),
-            _host_array(noise_matrix, dtype=complex),
+            _host_array(carrier_matrix, copy=False),
+            _host_array(signal_matrix, copy=False),
+            _host_array(noise_matrix, dtype=complex, copy=False),
             _host_array(noise_selection_vectors, dtype=complex),
             _host_array(qhd_parameter_indices, dtype=int),
             _host_array(qhd_placing_indices, dtype=int),
