@@ -309,6 +309,13 @@ def simulate(
         return _host.simulate(
             host_plan, optimized_parameters, parameters, carrier_changing_values, signal_changing_values
         )
+    if signal_matrix.size == 0 or carrier_matrix.size == 0 or noise_matrix.size == 0:
+        # Arrays built for the host path (dense matrices left out, see run_build_step) cannot run the JAX path:
+        # JAX would silently drop the out-of-range matrix updates and return wrong numbers.
+        raise ValueError(
+            "These simulation arrays were built for the host path (differometor.host). To run the JAX path, set "
+            "differometor.host.ENABLED = False (or host.JAX_PATH_ARRAYS = True) before run_build_step."
+        )
 
     # Insert optimized parameter values into the base parameter row.
     parameters = parameters.at[[0], optimized_parameter_indices].set(
@@ -614,9 +621,24 @@ def run_build_step(
     if plan is None or _host.JAX_PATH_ARRAYS:
         # [the-prime-model-new] The WS2/WS3 arrays only serve the JAX path. With a host plan they are left out
         # (71 fewer jit arguments and host-to-device transfers); the JAX path then runs the original code.
-        simulation_arrays.update({k: jnp.asarray(v) for k, v in pattern.items()})
+        simulation_arrays.update(pattern)
         if assembly_plan:
-            simulation_arrays["assembly"] = _assembly._to_jax(assembly_plan)
+            simulation_arrays["assembly"] = assembly_plan
+    else:
+        # [the-prime-model-new2] Likewise the dense base matrices (signal and noise: 751 x 752 complex, ~9 MB each
+        # in the benchmark; carrier ~1.3 MB): the host plan holds every entry the host path needs, and their
+        # transfer to the device was the largest single cost of the build (~10-25 ms). Empty placeholders keep
+        # `simulate`'s signature; `simulate` refuses to run the JAX path on them.
+        for name in ("carrier_matrix", "signal_matrix", "noise_matrix"):
+            simulation_arrays[name] = np.zeros((0, 0), dtype=simulation_arrays[name].dtype)
+
+    # Everything above is NumPy; move all arrays (and the port/index metadata) to the device in one batched
+    # transfer. The host plan is static (no leaves) and stays as it is.
+    host_plan = simulation_arrays.pop("host_plan", None)
+    simulation_arrays, device_metadata = jax.device_put((simulation_arrays, tuple(metadata[:-1])))
+    metadata = (*device_metadata, metadata[-1])
+    if host_plan is not None:
+        simulation_arrays["host_plan"] = host_plan
 
     if timeit:
         for array in simulation_arrays.values():

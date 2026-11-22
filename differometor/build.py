@@ -105,17 +105,19 @@ Notes
 # without changing a single bit of the outputs.
 
 
-def _to_jax(value, dtype=None) -> jnp.ndarray:
+def _host_array(value, dtype=None) -> np.ndarray:
     """
-    `jnp.array(value, dtype=dtype)` without compiling anything.
+    The NumPy array that `jnp.array(value, dtype=dtype)` would hold: same values, shape and (canonical) dtype.
 
-    `jnp.array` copies (and casts) on the device, which compiles one small XLA program per
-    distinct shape/dtype. Converting in NumPy and transferring with `jnp.asarray` gives the same
-    values, dtype and shape.
+    `jnp.array` copies (and casts) on the device, which compiles one small XLA program per distinct
+    shape/dtype. The build stays in NumPy; `run_build_step` moves every array to the device in one
+    batched `jax.device_put` at the end (one call instead of ~35 single transfers, and no transfers
+    back to the host for the plan builders in between).
     """
-    if dtype is not None:
-        dtype = jnp.dtype(jax.dtypes.canonicalize_dtype(dtype))
-    return jnp.asarray(np.asarray(value, dtype=dtype))
+    # a copy, like the device transfer it replaces: the build later modifies some index arrays in place
+    array = np.array(value, dtype=None if dtype is None else jax.dtypes.canonicalize_dtype(dtype), copy=True)
+    canonical = jax.dtypes.canonicalize_dtype(array.dtype)
+    return array if array.dtype == canonical else array.astype(canonical)
 
 
 def _numpy_component(name: str):
@@ -1483,22 +1485,22 @@ def build(setup: Setup):
     return (
         (carrier_instructions, signal_instructions, noise_instructions, signal_components, parameter_names),
         (
-            _to_jax([parameters], dtype=complex),
-            _to_jax(carrier_matrix),
-            _to_jax(signal_matrix),
-            _to_jax(noise_matrix, dtype=complex),
-            _to_jax(noise_selection_vectors, dtype=complex),
-            _to_jax(qhd_parameter_indices, dtype=int),
-            _to_jax(qhd_placing_indices, dtype=int),
-            _to_jax(linked_indices, dtype=int),
-            _to_jax(linking_function_indices, dtype=int),
-            _to_jax(indices_to_link, dtype=int),
+            _host_array([parameters], dtype=complex),
+            _host_array(carrier_matrix),
+            _host_array(signal_matrix),
+            _host_array(noise_matrix, dtype=complex),
+            _host_array(noise_selection_vectors, dtype=complex),
+            _host_array(qhd_parameter_indices, dtype=int),
+            _host_array(qhd_placing_indices, dtype=int),
+            _host_array(linked_indices, dtype=int),
+            _host_array(linking_function_indices, dtype=int),
+            _host_array(indices_to_link, dtype=int),
         ),
         (
-            _to_jax(detector_indices, dtype=int),
-            _to_jax(mirror_indices, dtype=int),
-            _to_jax(beamsplitter_indices, dtype=int),
-            _to_jax(isolator_indices, dtype=int),
+            _host_array(detector_indices, dtype=int),
+            _host_array(mirror_indices, dtype=int),
+            _host_array(beamsplitter_indices, dtype=int),
+            _host_array(isolator_indices, dtype=int),
             port_to_index,
         ),
     )
@@ -1696,10 +1698,10 @@ def pairs_to_arrays(
         if len(arrays["function_input_indices"]) == 0:
             # Dummy update that leaves matrices unchanged.
             return (
-                _to_jax([[0, 0, 0]]),
-                _to_jax([FUNCTIONS.index(dummy_function)]),
-                _to_jax([[0], [0]]),
-                _to_jax([[0], [0]]),
+                _host_array([[0, 0, 0]]),
+                _host_array([FUNCTIONS.index(dummy_function)]),
+                _host_array([[0], [0]]),
+                _host_array([[0], [0]]),
             )
 
         function_input_indices = np.vstack(arrays["function_input_indices"])
@@ -1718,27 +1720,27 @@ def pairs_to_arrays(
                 )
 
             return (
-                _to_jax(function_input_indices, dtype=int),
-                _to_jax(arrays["function_indices"], dtype=int),
-                _to_jax(output_indices, dtype=int),
-                _to_jax(system_matrix_indices, dtype=int),
-                _to_jax(carrier_solution_indices, dtype=int),
-                _to_jax(carrier_solution_placing_indices, dtype=int),
+                _host_array(function_input_indices, dtype=int),
+                _host_array(arrays["function_indices"], dtype=int),
+                _host_array(output_indices, dtype=int),
+                _host_array(system_matrix_indices, dtype=int),
+                _host_array(carrier_solution_indices, dtype=int),
+                _host_array(carrier_solution_placing_indices, dtype=int),
             )
 
         return (
-            _to_jax(function_input_indices, dtype=int),
-            _to_jax(arrays["function_indices"], dtype=int),
-            _to_jax(output_indices, dtype=int),
-            _to_jax(system_matrix_indices, dtype=int),
+            _host_array(function_input_indices, dtype=int),
+            _host_array(arrays["function_indices"], dtype=int),
+            _host_array(output_indices, dtype=int),
+            _host_array(system_matrix_indices, dtype=int),
         )
 
     return (
         (
-            _to_jax(optimized_parameter_indices, dtype=int),
-            _to_jax(optimization_value_indices, dtype=int),
-            _to_jax(carrier_changing_parameter_indices, dtype=int),
-            _to_jax(signal_changing_parameter_indices, dtype=int),
+            _host_array(optimized_parameter_indices, dtype=int),
+            _host_array(optimization_value_indices, dtype=int),
+            _host_array(carrier_changing_parameter_indices, dtype=int),
+            _host_array(signal_changing_parameter_indices, dtype=int),
         ),
         combine_arrays(carrier_arrays),
         combine_arrays(signal_arrays, signal=True),
@@ -1796,9 +1798,9 @@ def prepare_arrays(
 
     # Ensure at least one optimized parameter index exists, using a dummy identity update if needed.
     if len(optimized_parameter_indices) == 0:
-        optimized_parameter_indices = _to_jax([0])
-        optimized_parameters = _to_jax(host_parameters[0][[0]])
-        optimized_value_indices = _to_jax([0])
+        optimized_parameter_indices = _host_array([0])
+        optimized_parameters = _host_array(host_parameters[0][[0]])
+        optimized_value_indices = _host_array([0])
 
     # Normalize changing_values to shape (V, R) if provided.
     if changing_values is not None:
@@ -1808,7 +1810,7 @@ def prepare_arrays(
             host_values = np.asarray(changing_values)
             if host_values.ndim == 1:
                 host_values = host_values.reshape(1, -1)
-            changing_values = jnp.asarray(host_values)
+            changing_values = host_values           # moved to the device with all other arrays (run_build_step)
             signal_changing_values = changing_values
         else:
             if len(changing_values.shape) == 1:
@@ -1820,8 +1822,8 @@ def prepare_arrays(
 
     # Carrier changing defaults.
     if len(carrier_changing_parameter_indices) == 0:
-        carrier_changing_parameter_indices = _to_jax([0])
-        carrier_changing_values = _to_jax([host_parameters[0][[0]]])
+        carrier_changing_parameter_indices = _host_array([0])
+        carrier_changing_values = _host_array([host_parameters[0][[0]]])
     else:
         carrier_changing_values = changing_values
         if carrier_changing_values.shape[0] != len(carrier_changing_parameter_indices):
@@ -1836,8 +1838,8 @@ def prepare_arrays(
 
     # Signal changing defaults.
     if len(signal_changing_parameter_indices) == 0:
-        signal_changing_parameter_indices = _to_jax([0])
-        signal_changing_values = _to_jax([host_parameters[0][[0]]])
+        signal_changing_parameter_indices = _host_array([0])
+        signal_changing_values = _host_array([host_parameters[0][[0]]])
 
     return (
         optimized_parameters,

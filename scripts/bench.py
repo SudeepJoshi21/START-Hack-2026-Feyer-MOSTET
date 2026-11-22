@@ -293,6 +293,10 @@ def worker_parts(args):
     T = Timer()
     T.rows.append(("imports", "setup", t_import))
     fn, needs = PARTS[args.part]
+    if args.part in ("assembly", "solve"):          # these parts time pieces of the JAX path: keep its arrays
+        from differometor import host as _host
+        if hasattr(_host, "JAX_PATH_ARRAYS"):
+            _host.JAX_PATH_ARRAYS = True
     W = T("build", "setup", lambda: _load_workload(args.freqs)) if needs else None
     info = fn(T, W, args.repeats, args.freqs) or {}
     warm = info.pop("warm", [])

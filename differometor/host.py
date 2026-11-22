@@ -47,9 +47,10 @@ ENABLED = True
 
 JAX_PATH_ARRAYS = False
 """
-When a host plan is built, `run_build_step` leaves out the WS2 pattern and WS3 assembly arrays (they only serve the JAX
-path; with `ENABLED = False` or without `host_plan` the JAX path then runs the original assembly and dense solve).
-Set to True before building to keep them, e.g. to compare the host path with the WS2/WS3 JAX path.
+When a host plan is built, `run_build_step` leaves out what only the JAX path needs: the WS2 pattern and WS3 assembly
+arrays, and the dense base matrices (carrier, signal, noise; replaced by empty placeholders, so `simulate` keeps its
+signature). `simulate` refuses to run the JAX path on such arrays (ValueError) rather than compute on placeholders.
+Set to True before building to keep everything, e.g. to compare the host path with the JAX path on one set of arrays.
 """
 
 NOISE_FACTOR = UNIT_VACUUM * H_PLANCK * F0 * 0.25
