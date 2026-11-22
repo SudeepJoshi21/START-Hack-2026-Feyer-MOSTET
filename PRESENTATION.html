@@ -123,17 +123,6 @@
         </ul>
       </div>
     </div>
-    <p class="muted" style="margin:24px 0 6px">Where our 2.09 s goes</p>
-    <div class="stack">
-      <div class="s-setup" style="width:50%">imports + setup 1.04 s</div>
-      <div class="s-compile" style="width:15.3%">compile 0.32</div>
-      <div class="s-fwd" style="width:21.1%">forward 0.44</div>
-      <div class="s-grad" style="width:13.6%">grad 0.28</div>
-    </div>
-    <p class="muted" style="margin-top:16px">On the same machine, our own earlier pure-JAX version took <b style="color:var(--ink)">28.8 s</b> (26.0 s of it compiling).
-      For reference only: the organisers' 32 GB Xeon ran the original in 44.2 s.</p>
-    <div class="source">benchmarks/laptop/grid-main-run1..9.json (median: run 2) · grid-purejax-f5ea168.json · benchmarks/cpu-baseline.json (organisers).
-      The lighter start_here.py walkthrough with the original code finished once here in 254 s, swapping heavily.</div>
   </section>
 
   <!-- 4. Why slow -->
