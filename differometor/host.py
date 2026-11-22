@@ -593,12 +593,20 @@ def _forward(plan, optimized, parameters, carrier_values, signal_values):
 
     # one SuperLU factorisation per frequency (WS1), kept in the state for the backward pass
     factors = _adjoint.Factorisations(values, sp["rows"], sp["cols"], size)
-    x = factors.solve(rhs, "N", REFINE["signal"],                                       # A x = b
-                      needs_extended=lambda x, dx: _needs_extended(g, carrier, x, dx))
-    w = (factors.solve(np.swapaxes(c_rows, 1, 2), "H", REFINE["weights"]).swapaxes(1, 2)   # A^H w_d = c_d
-         if c_rows.shape[1] else np.zeros(c_rows.shape, dtype=np.complex128))
     s["factors"] = factors
-    s["x"], s["w"] = x, w
+    d = c_rows.shape[1]
+
+    # A^H solve: the noise weights (A^H w_d = c_d) and, as extra columns, A^-H e_i for the detector rows i (where the
+    # selections are non-zero). conj(A^-H e_i) = A^-T e_i gives the signal adjoint in the backward pass without another
+    # solve whenever the read-out touches the signal only at those rows (detectors read it there).
+    support = np.flatnonzero(np.any(c_rows != 0, axis=(0, 1))) if d else np.zeros(0, dtype=np.int64)
+    if d:
+        units = np.zeros((r, size, support.size), dtype=np.complex128)
+        units[:, support, np.arange(support.size)] = 1.0
+        h = factors.solve(np.concatenate([np.swapaxes(c_rows, 1, 2), units], axis=2), "H", REFINE["weights"])
+        w, z = h[:, :, :d].swapaxes(1, 2), np.conj(h[:, :, d:])           # (R, D, N), (R, N, S) = A^-T e_i
+    else:
+        w, z = np.zeros(c_rows.shape, dtype=np.complex128), None
 
     # noise = sqrt(2 K Re(w^H Q w)), Q values from the grouped noise components
     pn = ps[:1] if npn["once"] else ps
@@ -606,9 +614,22 @@ def _forward(plan, optimized, parameters, carrier_values, signal_values):
     q = np.concatenate([yn[:, npn["outputs"]], np.broadcast_to(npn["base_values"], (pn.shape[0], npn["base_values"].shape[0]))], axis=1)
     q_rows = np.concatenate([npn["q_rows"], npn["base_rows"]])
     q_cols = np.concatenate([npn["q_cols"], npn["base_cols"]])
-    total = np.real(np.einsum("rdk,rk,rdk->rd", np.conj(w[:, :, q_rows]), np.broadcast_to(q, (r, q.shape[1])), w[:, :, q_cols]))
+    qb = np.broadcast_to(q, (r, q.shape[1]))
+    total = np.real(np.einsum("rdk,rk,rdk->rd", np.conj(w[:, :, q_rows]), qb, w[:, :, q_cols]))
     noise = np.sqrt(2 * total * NOISE_FACTOR)                         # (R, D)
-    s.update(pn=pn, q=q, q_rows=q_rows, q_cols=q_cols, noise=noise)
+    qw = np.zeros_like(w)
+    np.add.at(qw, (slice(None), slice(None), q_rows), qb[:, None, :] * w[:, :, q_cols])
+    qtw = np.zeros_like(w)
+    np.add.at(qtw, (slice(None), slice(None), q_cols), qb[:, None, :] * np.conj(w[:, :, q_rows]))
+
+    # A solve: the signal (A x = b) and, as extra columns, y_d = A^-1 (Q w_d + conj(Q^T w_d)). The noise adjoint
+    # A lam_u = conj(w_bar) has exactly the right-hand side total_bar_d * (Q w_d + conj(Q^T w_d)) (total_bar real), so
+    # the backward pass only scales y_d. Extra columns cost little: SuperLU's solve calls are overhead-bound.
+    xs = factors.solve(np.concatenate([rhs[:, :, None], np.swapaxes(qw + np.conj(qtw), 1, 2)], axis=2), "N",
+                       REFINE["signal"], needs_extended=lambda x, dx: _needs_extended(g, carrier, x, dx))
+    x, y = xs[:, :, 0], xs[:, :, 1:].swapaxes(1, 2)                   # (R, N), (R, D, N)
+    s["x"], s["w"], s["y"], s["z"], s["support"] = x, w, y, z, support
+    s.update(pn=pn, q=q, q_rows=q_rows, q_cols=q_cols, noise=noise, qw=qw, qtw=qtw)
     return carrier.T, x.T, noise.T, s
 
 
@@ -636,23 +657,20 @@ def _backward(plan, optimized, parameters, carrier_values, signal_values, carrie
     noise_b = noise_bar.T                                            # (R, D)
     total_b = noise_b * NOISE_FACTOR / s["noise"]
     q, q_rows, q_cols = s["q"], s["q_rows"], s["q_cols"]
-    qb = np.broadcast_to(q, (r, q.shape[1]))
-    qw = np.zeros_like(w)
-    np.add.at(qw, (slice(None), slice(None), q_rows), qb[:, None, :] * w[:, :, q_cols])
-    qtw = np.zeros_like(w)
-    np.add.at(qtw, (slice(None), slice(None), q_cols), qb[:, None, :] * np.conj(w[:, :, q_rows]))
-    w_bar = total_b[:, :, None] * (np.conj(qw) + qtw)
     q_bar = np.einsum("rd,rdk,rdk->rk", total_b, np.conj(w[:, :, q_rows]), w[:, :, q_cols])
     if npn["once"]:
         q_bar = q_bar.sum(axis=0, keepdims=True)
 
     # signal + weights solve (WS2 adjoint formulas, WS1 SuperLU kernel)
     rows, cols = sp["rows"], sp["cols"]
-    x_bar, u_bar = signal_bar.T, np.conj(w_bar)
-    factors = s["factors"]                                          # reuse the forward factorisations
-    lam_x = factors.solve(x_bar, "T", REFINE["adjoint"])            # A^T lam_x = x_bar
-    lam_u = (factors.solve(np.swapaxes(u_bar, 1, 2), "N", REFINE["adjoint"]).swapaxes(1, 2)   # A lam_u = u_bar
-             if u_bar.shape[1] else np.zeros(u_bar.shape, dtype=np.complex128))
+    x_bar = signal_bar.T
+    factors, support, z = s["factors"], s["support"], s["z"]         # reuse the forward factorisations
+    touched = np.flatnonzero(np.any(x_bar != 0, axis=0))
+    if z is not None and np.isin(touched, support).all():           # A^T lam_x = x_bar from the A^-T e_i of the forward
+        lam_x = np.einsum("rni,ri->rn", z[:, :, np.searchsorted(support, touched)], x_bar[:, touched])
+    else:                                                           # the read-out touches other rows: solve
+        lam_x = factors.solve(x_bar, "T", REFINE["adjoint"])
+    lam_u = total_b[:, :, None] * s["y"]                            # A lam_u = conj(w_bar), solved in the forward pass
     values_bar = -lam_x[:, rows] * x[:, cols] - np.sum(np.conj(w)[:, :, rows] * lam_u[:, :, cols], axis=1)
     rhs_bar, c_bar = lam_x, np.conj(lam_u)                           # (R, N), (R, D, N)
 
