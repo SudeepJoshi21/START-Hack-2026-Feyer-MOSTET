@@ -100,30 +100,6 @@
     <div class="source">Machine: AMD Ryzen AI 7 350, 16 GB RAM (7 GB available to WSL2), <code>--cpus 1</code> · reports in <code>benchmarks/laptop/</code> · repo <code>SudeepJoshi21/START-Hack-2026-Feyer-MOSTET</code>, branch <code>main</code></div>
   </section>
 
-  <!-- 2. Challenge -->
-  <section class="slide">
-    <div class="kicker">The challenge</div>
-    <h2>Make Differometor faster, without changing the physics</h2>
-    <div class="row">
-      <div class="col card">
-        <h3>What is scored</h3>
-        <p>One cold run of <code>benchmark.py --cpus 1</code>: imports, setup, <b>all compilation</b>, forward simulation,
-          sensitivity, gradients and result transfer.</p>
-      </div>
-      <div class="col card">
-        <h3>What must stay</h3>
-        <ul>
-          <li>The full setup: all 101 frequencies, all 193 design variables</li>
-          <li>Double precision, sensitivities within 1e-5 (ln) of the reference</li>
-          <li>Finite outputs, non-zero gradient, gradient spot check</li>
-        </ul>
-      </div>
-    </div>
-    <div class="card" style="margin-top:22px">
-      <b>Our rule:</b> <code>benchmark.py</code>, the input files and <code>requirements.txt</code> stay byte-identical to the organisers'
-      version. Every change lives in <code>differometor/</code>. No precomputed results, no compilation cache.
-    </div>
-  </section>
 
   <!-- 3. Where the time went -->
   <section class="slide">
@@ -354,7 +330,7 @@ python scripts/check_correctness.py run.json run.npz                            
 </div>
 <nav>
   <button id="prev" aria-label="Previous slide">←</button>
-  <span id="count">1 / 13</span>
+  <span id="count">1 / 12</span>
   <button id="next" aria-label="Next slide">→</button>
   <button id="theme" aria-label="Toggle theme">◐</button>
 </nav>
