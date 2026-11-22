@@ -154,4 +154,4 @@ Always pass `--cpus 1`: without it the benchmark uses every core and the numbers
 Details: [`docs/CHANGES.md`](docs/CHANGES.md) (every change, simple), [`docs/FINDINGS.md`](docs/FINDINGS.md)
 (all measurements), [`OPTIMIZATION_PLAN.md`](OPTIMIZATION_PLAN.md) (how we split the work).
 
-**Team:** ZeyuuuChen, SudeepJoshi21 and teammates (commit authors on `main`).
+**Team:** Sudeep Joshi, Ayush Sharma, Zeyu Chen.
