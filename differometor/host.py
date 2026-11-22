@@ -480,7 +480,8 @@ def host_plan(a: dict) -> HostPlan | None:
     mr, mc = np.mod(mr, cn), np.mod(mc, cn + 1)
     if not _unique(mr, mc, cn + 1):
         return None
-    plan["carrier"].update(base=carrier_base.astype(np.complex128), matrix_rows=mr, matrix_cols=mc)
+    # no copy needed: the build created the matrix for this purpose, and `_forward` copies it before writing
+    plan["carrier"].update(base=carrier_base.astype(np.complex128, copy=False), matrix_rows=mr, matrix_cols=mc)
 
     q_rows, q_cols = (x.astype(np.int64) for x in n("noise_system_matrix_indices"))
     plan["noise"].update(

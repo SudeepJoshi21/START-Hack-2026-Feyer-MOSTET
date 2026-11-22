@@ -71,7 +71,10 @@ def signal_pattern(signal_matrix, signal_matrix_indices) -> tuple[np.ndarray, np
     rows = np.mod(rows, n)                          # guard: negative rows would duplicate entries
     cols = np.mod(cols, n + 1)                      # -1 -> n (right-hand side column)
     in_matrix = cols < n
-    flat = np.concatenate([np.flatnonzero(base[:, :n]), rows[in_matrix] * n + cols[in_matrix]])
+    # Non-zeros of base[:, :n], scanned on the whole (contiguous) matrix: the slice would be copied first (~9 MB).
+    base_rows, base_cols = np.divmod(np.flatnonzero(base), base.shape[1])
+    keep = base_cols < n
+    flat = np.concatenate([base_rows[keep] * n + base_cols[keep], rows[in_matrix] * n + cols[in_matrix]])
     flat = np.unique(flat)                          # unique => scatter-set == scatter-add
     return (flat // n).astype(np.int32), (flat % n).astype(np.int32)
 
@@ -105,10 +108,13 @@ def pattern_arrays(simulation_arrays: dict, as_jax: bool = True) -> dict:
         return {}
     rows, cols = signal_pattern(signal_matrix, simulation_arrays["signal_matrix_indices"])
 
-    # Base noise matrix with the update positions removed (exactly what `.at[].set` leaves).
-    base = noise_matrix.copy()
-    base[q_rows, q_cols] = 0
-    base_rows, base_cols = np.nonzero(base)
+    # Base noise matrix with the update positions removed (exactly what `.at[].set` leaves): its non-zeros, minus
+    # the update positions (row-major order, as np.nonzero; without copying the ~9 MB matrix).
+    if q_rows.size and (q_rows.max() >= n or q_cols.max() >= n):
+        return {}
+    flat = np.flatnonzero(noise_matrix)
+    flat = flat[~np.isin(flat, q_rows.astype(np.int64) * n + q_cols.astype(np.int64))]
+    base_rows, base_cols = np.divmod(flat, n)
 
     # Noise functions (vacuum, loss, squeezer) do not depend on frequency. Unless a swept
     # parameter is one of their inputs, all expanded parameter rows give the same values.
@@ -222,6 +228,24 @@ per-frequency COLAMD (round-off level, 6e-8 relative on the raw solves; refineme
 """
 
 
+BLOCK_DIAGONAL = True
+"""
+Factorise the F systems as one block-diagonal matrix diag(A_1, ..., A_F) with a single SuperLU call, and solve all
+frequencies with one call per pass (the-prime-model-nada). Requires the reused natural ordering (REUSE_ORDERING):
+SuperLU's column elimination tree is then a forest of the per-frequency trees, its postorder keeps every block
+contiguous, pivoting and supernodes stay inside a block, so the factors and solutions are bitwise identical to
+per-frequency calls (checked on the benchmark systems and on all 20 inputs of scripts/scenarios.py); it only saves
+the per-call overhead of 101 factorisations and ~800 solves: warm, factorisation 24.7 -> 21.7 ms and ~0.45 ms per
+solve pass; in the official first run (fresh process) ~12 ms. Frequencies solved on their own (the mixed-precision
+steps of the adaptive mode) get zero right-hand sides in the other blocks.
+
+Tried with it and not adopted (the-prime-model-nada): residual products with SciPy's compiled CSR kernel
+(`scipy.sparse._sparsetools.csr_matvecs`, loadable on its own like SuperLU) instead of gather + bincount: faster in
+isolation, no gain in the official run (0.547 vs 0.550 s, interleaved), and not bitwise identical (complex multiply
+rounding).
+"""
+
+
 _BLAS_THREAD_CONTROLS = None
 
 
@@ -323,11 +347,19 @@ class Factorisations:
         self.data = np.ascontiguousarray(vals[:, order], dtype=np.complex128)   # (F, nnz), CSC order
         self.rows, self.columns = indices, np.repeat(np.arange(n), np.diff(indptr))
         indices, indptr = indices.astype(np.intc), indptr.astype(np.intc)
-        self.factors = [_gstrf(n, self.data[f], indices, indptr, options) for f in range(vals.shape[0])]
+        frequencies, nnz = self.data.shape
+        self.frequencies, self.block, self.factors = frequencies, None, None
+        if BLOCK_DIAGONAL and options.get("ColPerm") == "NATURAL" and frequencies > 1 and frequencies * nnz < 2**31 - 1:
+            block_indices = (indices[None, :] + (np.arange(frequencies) * n)[:, None]).ravel()
+            block_indptr = np.concatenate([[0], (indptr[1:][None, :] + (np.arange(frequencies) * nnz)[:, None]).ravel()])
+            self.block = _gstrf(frequencies * n, self.data.ravel(), block_indices.astype(np.intc),
+                                block_indptr.astype(np.intc), options)
+        else:
+            self.factors = [_gstrf(n, self.data[f], indices, indptr, options) for f in range(frequencies)]
         self._index, self._padded = {}, {}
 
     def __len__(self):
-        return len(self.factors)
+        return self.frequencies
 
     def _apply(self, x, trans):
         """op(A_f) x[f] for all f; x (F, n, k)."""
@@ -346,6 +378,15 @@ class Factorisations:
         return out.view(np.complex128).reshape(x.shape)
 
     def _solve(self, rhs, trans, rows=None):
+        """op(A_f)^-1 rhs[i] for the frequencies f = rows[i] (default all); rhs (F', n, k)."""
+        if self.block is not None:
+            full = rhs
+            if rows is not None:        # only some frequencies: the others get a zero right-hand side (blocks are independent)
+                full = np.zeros((self.frequencies,) + rhs.shape[1:], dtype=np.complex128)
+                full[rows] = rhs
+            x = self.block.solve(np.ascontiguousarray(full).reshape(self.frequencies * self.n, -1), trans=trans)
+            x = x.reshape(full.shape)
+            return x if rows is None else x[rows]
         factors = self.factors if rows is None else [self.factors[f] for f in rows]
         return np.stack([lu.solve(rhs[i], trans=trans) for i, lu in enumerate(factors)])
 
