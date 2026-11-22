@@ -2,25 +2,27 @@
 
 **START Hack Munich 2026 · Feyer challenge · team repo `SudeepJoshi21/START-Hack-2026-Feyer-MOSTET`, branch `main`**
 
-> One full evaluation (101 frequencies, 193 gradients, float64) now takes **0.92 s** on one CPU core,
-> down from **60–72 s** for the original code on the same machine: **~65–80× faster**, with all judging criteria passing
+> One full evaluation (101 frequencies, 193 gradients, float64) now takes **0.83 s** on one CPU core,
+> down from **60–72 s** for the original code on the same machine: **~75–85× faster**, with all judging criteria passing
 > and the physics results unchanged.
 
 ## The result
 
 | `benchmark.py --cpus 1` (unchanged scorer) | Original code | Our `main` |
 |---|---:|---:|
-| **First-run total (scored)**, AMD EPYC 7763, same machine | 60.4–72.5 s (different days) | **0.92 s** median of 5 (min 0.90 s) |
+| **First-run total (scored)**, AMD EPYC 7763, same machine | 60.4–72.5 s (different days) | **0.83 s** median of 5 (0.82–0.84 s) |
 | Organisers' baseline, Intel Xeon 8468 | 44.2 s | — |
 | Compile (all programs) | 38.5 s (EPYC) / 22.9 s (Xeon) | **0.11 s** |
-| Forward + gradient (first run) | 25.7 s (EPYC) / 17.7 s (Xeon) | **0.29 s** |
+| Forward + gradient (first run) | 25.7 s (EPYC) / 17.7 s (Xeon) | **0.27 s** |
+| Setup (build the optical setup and inputs) | 7.7 s (EPYC) | **0.095 s** |
 | Peak memory | ~14.4 GB | < 1 GB |
 | Max \|Δ ln S\| vs reference (limit 1e-5) | 5.374e-6 | 5.374e-6 |
 
-Sources: `benchmarks/cpu-baseline.json` (organisers), `benchmarks/final/` (ours, commit `57a0e25`, plus the original code
+Sources: `benchmarks/cpu-baseline.json` (organisers), `benchmarks/final/` (ours, commit `54ff4ae`, plus the original code
 on the same EPYC), index in `benchmarks/README.md`. The EPYC node is shared: totals vary by about ±0.1 s, so we report
-medians. Without the XLA compile options (`DIFFEROMETOR_XLA_OPT0=0`) the total is 1.24 s. On our laptop (Ryzen AI 7 350,
-1 core) an earlier version ran in 1.68–2.33 s (8 runs).
+medians (the step from 0.92 s to 0.83 s is the faster setup, −16 ms in an interleaved A/B, plus a quieter node).
+Without the XLA compile options (`DIFFEROMETOR_XLA_OPT0=0`) the total is 1.2–1.6 s depending on node load. On our laptop
+(Ryzen AI 7 350, 1 core) an earlier version ran in 1.68–2.33 s (8 runs).
 
 ## What made it slow
 
@@ -39,7 +41,9 @@ medians. Without the XLA compile options (`DIFFEROMETOR_XLA_OPT0=0`) the total i
    The physics formulas in `components.py` are **reused unchanged** (re-bound to NumPy), and their derivatives come from
    forward-mode dual numbers. XLA sees only two callbacks: compile time on the EPYC drops from 20.2 s (the JAX version, `benchmarks/epyc-main-default.json`)
    to 0.11 s.
-4. **Startup and compile polish.** No needless imports or tiny compiles while building the setup, plus three XLA compile options
+4. **Startup and compile polish.** No needless imports or tiny compiles while building the setup; the setup stays in
+   NumPy and moves everything to the device in one transfer, skipping the dense base matrices the host path never reads
+   (setup 7.7 s → 0.095 s). Plus three XLA compile options
    set in `differometor/__init__.py`. They don't change any number, are recorded in the benchmark report, and can be
    switched off with `DIFFEROMETOR_XLA_OPT0=0`.
 

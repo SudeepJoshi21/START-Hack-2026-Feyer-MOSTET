@@ -1,23 +1,23 @@
 {
   "benchmark": "start-munich-2026-public-differometor-uifo-v2",
-  "measured_at_utc": "2026-11-22T00:10:53.964925+00:00",
+  "measured_at_utc": "2026-11-22T00:35:01.647961+00:00",
   "starter_sha256": "d5950bbd872e5b00ad63f0bd7081e5096fb14ba9c96c80a6854a3b714719bd4e",
   "source": {
     "public_repository": "https://github.com/artificial-scientist-lab/Differometor",
     "baseline_commit": "b0dc7c79e7c72a1b010174f6bdcad01efa51d6ff",
-    "commit": "57a0e25ff1278f3751df42e42f3b11d1ce83e72d",
+    "commit": "54ff4aefed2ceb2ffd812cd79f7caa5f8aa40e23",
     "modified": false,
     "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "simulator_files_sha256": {
       "differometor/__init__.py": "9c2a9e125937629c6a3e723920dd407c34478cfe4a7e405838482cea1fe5a0ec",
       "differometor/adjoint.py": "1004bb9e9d2da84debae638d579e8665dbfe81f06ae6db1911021d21fc1a5f79",
       "differometor/assembly.py": "499f1869733fd59604243124a5ac4717e6b966094cf51e46d529aadeb36ce2f8",
-      "differometor/build.py": "9f556724997df04c34744690a45affa16bf206da73c31ff471613f927c08bc51",
+      "differometor/build.py": "37814482a92105dc76cb24927b1ec7518e99555629f3f55168e009baedbfa922",
       "differometor/components.py": "2e857e19d468d94b46594f71a76221d9d8b677bad05f6cf03b9e57b0e1613593",
-      "differometor/host.py": "00aeecada8af773894d077b90554ae92b17bd9716936f420a90473b0802e76a4",
+      "differometor/host.py": "721bf1d3f3f72d9fad491bb57bf636194a66821f084b0c9a27991eed83d91fa8",
       "differometor/plot.py": "16735e0fb14902f2c024e3da9f2655cbea634c4dd9e06c48af1247e12d0cf606",
       "differometor/setups.py": "478b1a7391b28604c36d8245e13ffa4f6d0f6dc32eeac6c6feaf5c08aa06a76b",
-      "differometor/simulate.py": "f60171339f96eb085c22c708b7a84e0a53293e632301eb1e32ef5ad826532f7a",
+      "differometor/simulate.py": "a356c3f54eafe06a1132c1be3e233f8d9ef0159d454ed756950e3b0f2d0490fb",
       "differometor/utils.py": "73ee8a862cbc435363904addc363071ed7dc8b1546956f82e1746998fe3b09ff"
     }
   },
@@ -885,123 +885,123 @@
       "key": "imports",
       "label": "Python / library imports",
       "category": "setup",
-      "seconds": 0.4121608268469572
+      "seconds": 0.35365146677941084
     },
     {
       "key": "initialize",
       "label": "Initialize CPU backend",
       "category": "setup",
-      "seconds": 0.004895634949207306
+      "seconds": 0.004912576638162136
     },
     {
       "key": "load",
       "label": "Read and parse public inputs",
       "category": "setup",
-      "seconds": 0.00212694238871336
+      "seconds": 0.0021115336567163467
     },
     {
       "key": "build",
       "label": "Build optical setup and prepare inputs",
       "category": "setup",
-      "seconds": 0.10294478293508291
+      "seconds": 0.08790879882872105
     },
     {
       "key": "forward_lower",
       "label": "Forward: trace / lower",
       "category": "compile",
-      "seconds": 0.010156204923987389
+      "seconds": 0.0104240532964468
     },
     {
       "key": "forward_compile",
       "label": "Forward: compile",
       "category": "compile",
-      "seconds": 0.011186463758349419
+      "seconds": 0.011036747135221958
     },
     {
       "key": "forward",
       "label": "Forward simulation + AD residuals",
       "category": "execute",
-      "seconds": 0.15803252160549164
+      "seconds": 0.15634246077388525
     },
     {
       "key": "sensitivity_lower",
       "label": "Sensitivity: trace / lower",
       "category": "compile",
-      "seconds": 0.03472588583827019
+      "seconds": 0.031098448671400547
     },
     {
       "key": "sensitivity_compile",
       "label": "Sensitivity: compile",
       "category": "compile",
-      "seconds": 0.023196330294013023
+      "seconds": 0.022954690270125866
     },
     {
       "key": "sensitivity",
       "label": "Sensitivity, powers and scalar loss",
       "category": "execute",
-      "seconds": 0.001714129000902176
+      "seconds": 0.0015698233619332314
     },
     {
       "key": "gradient_lower",
       "label": "Gradient: trace / lower",
       "category": "compile",
-      "seconds": 0.01698529440909624
+      "seconds": 0.016188278794288635
     },
     {
       "key": "gradient_compile",
       "label": "Gradient: compile",
       "category": "compile",
-      "seconds": 0.015486534684896469
+      "seconds": 0.015762359835207462
     },
     {
       "key": "gradient",
       "label": "Reverse-mode gradient",
       "category": "execute",
-      "seconds": 0.1226470423862338
+      "seconds": 0.1154429828748107
     },
     {
       "key": "host_transfer",
       "label": "Transfer results to host",
       "category": "output",
-      "seconds": 0.00023295171558856964
+      "seconds": 0.0002540731802582741
     }
   ],
   "repeat_samples": [
     {
-      "forward": 0.1532470155507326,
-      "sensitivity": 0.0013670381158590317,
-      "gradient": 0.10191454365849495,
-      "host_transfer": 0.00016510393470525742
+      "forward": 0.13934229873120785,
+      "sensitivity": 0.001413716934621334,
+      "gradient": 0.09616341814398766,
+      "host_transfer": 0.00017263833433389664
     },
     {
-      "forward": 0.1446532802656293,
-      "sensitivity": 0.001977289095520973,
-      "gradient": 0.1058934573084116,
-      "host_transfer": 0.00017174705862998962
+      "forward": 0.13427668064832687,
+      "sensitivity": 0.0015005012974143028,
+      "gradient": 0.09820391703397036,
+      "host_transfer": 0.0001660659909248352
     },
     {
-      "forward": 0.14714113902300596,
-      "sensitivity": 0.0014293268322944641,
-      "gradient": 0.10216880775988102,
-      "host_transfer": 0.00015332084149122238
+      "forward": 0.1314474530518055,
+      "sensitivity": 0.0014352565631270409,
+      "gradient": 0.0896216444671154,
+      "host_transfer": 0.00015283934772014618
     }
   ],
   "timing_seconds": {
-    "end_to_end": 0.9164915457367897,
-    "trace_lower_and_compile": 0.11173671390861273,
+    "end_to_end": 0.8296582940965891,
+    "trace_lower_and_compile": 0.10746457800269127,
     "runtime_samples": [
-      0.25669370125979185,
-      0.25269577372819185,
-      0.25089259445667267
+      0.23709207214415073,
+      0.23414716497063637,
+      0.22265719342976809
     ],
-    "runtime_median": 0.25269577372819185,
-    "runtime_min": 0.25089259445667267,
-    "runtime_max": 0.25669370125979185,
+    "runtime_median": 0.23414716497063637,
+    "runtime_min": 0.22265719342976809,
+    "runtime_max": 0.23709207214415073,
     "phase_runtime_medians": {
-      "forward": 0.14714113902300596,
-      "sensitivity": 0.0014293268322944641,
-      "gradient": 0.10216880775988102,
-      "host_transfer": 0.00016510393470525742
+      "forward": 0.13427668064832687,
+      "sensitivity": 0.0014352565631270409,
+      "gradient": 0.09616341814398766,
+      "host_transfer": 0.0001660659909248352
     }
   },
   "validation": {
