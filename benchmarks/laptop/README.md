@@ -1,7 +1,7 @@
 # Laptop benchmark reports (one machine)
 
-AMD Ryzen AI 7 350, WSL2, 7 GB RAM, `--cpus 1`. Official `benchmark.py` / `benchmark_aligo.py` (unchanged), JSON + plot per run.
-The original code cannot run the main benchmark on this laptop (needs ~14 GB); see PITCH.md.
+AMD Ryzen AI 7 350 laptop, 16 GB RAM, WSL2 with 7 GB available, `--cpus 1`. Official `benchmark.py` / `benchmark_aligo.py` (unchanged), JSON + plot per run.
+The original code cannot run the main benchmark in the 7 GB available to WSL2 (needs ~14 GB); see PITCH.md.
 
 | File | First-run total | Commit | XLA options | Max \|Δ ln S\| |
 |---|---:|---|---|---:|

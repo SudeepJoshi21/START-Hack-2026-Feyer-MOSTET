@@ -91,12 +91,13 @@
     <div class="kicker">START Hack Munich 2026 · Feyer challenge</div>
     <h1>Faster Physics:<br>Differometor in ~2 seconds, on a laptop</h1>
     <p class="muted" style="font-size:22px;max-width:860px">A full evaluation with all frequencies and gradients in float64, the same physics and every judging
-      criterion passing. Every timing is from <b style="color:var(--ink)">one machine</b>, a laptop, pinned to one core.</p>
+      criterion passing. Every timing is from <b style="color:var(--ink)">one machine</b>: an AMD Ryzen AI 7 350 with 16 GB RAM,
+      running WSL2 with 7 GB of it available, pinned to one core.</p>
     <div class="row" style="margin-top:auto;align-items:flex-end">
       <div><div class="big">~55×</div><div class="muted">aLIGO benchmark: 71.9 s → 1.3 s (same laptop)</div></div>
-      <div><div class="big" style="color:var(--good)">2.1 s</div><div class="muted">main benchmark (median of 9). The original does not even fit in 7 GB</div></div>
+      <div><div class="big" style="color:var(--good)">2.1 s</div><div class="muted">main benchmark (median of 9). The original does not even fit in the 7 GB WSL2 gets</div></div>
     </div>
-    <div class="source">Laptop: AMD Ryzen AI 7 350, WSL2, 7 GB RAM, <code>--cpus 1</code> · reports in <code>benchmarks/laptop/</code> · repo <code>SudeepJoshi21/START-Hack-2026-Feyer-MOSTET</code>, branch <code>main</code></div>
+    <div class="source">Machine: AMD Ryzen AI 7 350, 16 GB RAM (7 GB available to WSL2), <code>--cpus 1</code> · reports in <code>benchmarks/laptop/</code> · repo <code>SudeepJoshi21/START-Hack-2026-Feyer-MOSTET</code>, branch <code>main</code></div>
   </section>
 
   <!-- 2. Challenge -->
@@ -211,7 +212,7 @@ b̄    = λ
         <ul>
           <li>No 9 GB tape: only the matrix values and the solutions are kept</li>
           <li>No full 751×751 gradient matrix per frequency</li>
-          <li>Memory: the original needs <b>~14 GB</b> and does not fit on our 7 GB laptop; ours runs comfortably</li>
+          <li>Memory: the original needs <b>~14 GB</b> and does not fit in the 7 GB available to WSL2 on our machine; ours runs comfortably</li>
         </ul>
       </div>
     </div>
@@ -267,7 +268,7 @@ b̄    = λ
       <div class="bar"><span>Our pure-JAX version<br><small class="muted">sparse LU · adjoint · assembly</small></span><div class="track"><div class="fill hot" style="width:100%"></div></div><span class="val">28.8 s</span></div>
       <div class="bar"><span>Physics on the host<br><small class="muted">+ polish, XLA options, robustness fixes</small></span><div class="track"><div class="fill good" style="width:7.3%"></div></div><span class="val">2.09 s</span></div>
     </div>
-    <p class="muted" style="margin-top:22px">The original main benchmark needs ~14 GB and does not run on this 7 GB laptop. For reference only, the organisers
+    <p class="muted" style="margin-top:22px">The original main benchmark needs ~14 GB and does not run in the 7 GB available to WSL2 on this machine. For reference only, the organisers
       published 44.2 s on their 32 GB Xeon (a different machine).</p>
     <div class="source">Official benchmark.py --cpus 1 · benchmarks/laptop/grid-purejax-f5ea168.json · grid-main-run1..9.json (median) ·
       benchmarks/cpu-baseline.json (organisers)</div>

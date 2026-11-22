@@ -2,11 +2,12 @@
 
 **START Hack Munich 2026 · Feyer challenge · team repo `SudeepJoshi21/START-Hack-2026-Feyer-MOSTET`, branch `main`**
 
-> Every timing below was measured on **one machine**, a laptop (AMD Ryzen AI 7 350, WSL2, 7 GB RAM), pinned to one core
+> Every timing below was measured on **one machine**: an AMD Ryzen AI 7 350 laptop with 16 GB RAM, running WSL2 with 7 GB of
+> it available, pinned to one core
 > with the unchanged `benchmark.py --cpus 1`.
 > - **aLIGO benchmark** (organisers' `benchmark_aligo.py`): **71.9 s → 1.3 s, ~55× faster** on the same machine.
-> - **Main benchmark** (101 frequencies, 193 gradients, float64): **2.1 s** median. The original code **cannot run on this
->   laptop at all** (it needs ~14 GB of memory). For reference, the organisers' published baseline on their Xeon is 44.2 s.
+> - **Main benchmark** (101 frequencies, 193 gradients, float64): **2.1 s** median. The original code **cannot run in the
+>   7 GB available to WSL2** (it needs ~14 GB of memory). For reference, the organisers' published baseline on their Xeon is 44.2 s.
 >
 > All judging criteria pass, and the physics results are unchanged.
 
@@ -49,7 +50,7 @@ Notes:
 
 1. **Three dense 751×751 solves per frequency**, for a matrix that is **99.5 % zeros**.
 2. **A ~9 GB autodiff "tape"**, because JAX stored every intermediate for the gradient. That is why the original does not fit in
-   7 GB.
+   the 7 GB available to WSL2.
 3. **Compilation**: XLA compiled all 19 component formulas for every matrix entry, plus their derivatives. On aLIGO that
    is 65 of the 72 seconds.
 
