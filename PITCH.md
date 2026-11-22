@@ -1,11 +1,11 @@
-# Faster Physics: the benchmark that did not run now takes 2.1 s
+# Faster Physics: the benchmark that did not run now takes 2.09 s
 
 **START Hack Munich 2026 · Feyer challenge · team repo `SudeepJoshi21/START-Hack-2026-Feyer-MOSTET`, branch `main`**
 
 > Every timing below was measured on **one machine**: an AMD Ryzen AI 7 350 laptop with 16 GB RAM, running WSL2 with 7 GB of
 > it available, pinned to one core with the unchanged `benchmark.py --cpus 1`.
 > - **Main benchmark** (`benchmark.py`; 101 frequencies, 193 gradients, float64): the original
->   code **does not run** here, because it needs ~14 GB and WSL2 has 7 GB. Ours takes **2.1 s** (median of 9, all PASS). For
+>   code **does not run** here, because it needs ~14 GB and WSL2 has 7 GB. Ours takes **2.09 s** (median of 9, all PASS). For
 >   reference only, the organisers' published baseline on their 32 GB Xeon is 44.2 s.
 > - **aLIGO benchmark** (organisers' `benchmark_aligo.py`): **71.9 s → 1.3 s, ~55× faster** on the same machine.
 >
