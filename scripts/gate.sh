@@ -11,8 +11,9 @@
 #   2. benchmark.py (unchanged) with the XLA options off, then REPEATS times on; every run checked by
 #      scripts/check_correctness.py against all four criteria + the original code's arrays
 #   3. determinism: all runs bitwise identical (flags on vs off, and run to run)
-#   4. tests/test_adjoint.py, tests/test_host.py, tests/test_robustness.py (generalisation / anti-overfitting)
-#   5. scripts/scenarios.py check (criteria on 16 other inputs)
+#   4. tests/test_adjoint.py, tests/test_host.py, tests/test_robustness.py (vs the original code path on varied inputs),
+#      tests/test_generalisation.py (branch cuts, finite differences off the benchmark point, process history)
+#   5. scripts/scenarios.py check (criteria on 20 other inputs, incl. the edge-cases bundle)
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
@@ -70,11 +71,13 @@ PYTHONPATH=. python tests/test_adjoint.py 2>&1 | tail -5 | tee "$OUT/test_adjoin
 cat "$OUT/test_adjoint.log"
 PYTHONPATH=. timeout 1500 python -u tests/test_host.py > "$OUT/test_host.log" 2>&1; tail -2 "$OUT/test_host.log"
 grep -q "ALL PASS" "$OUT/test_host.log" || bad "test_host"
-PYTHONPATH=. timeout 1500 python -u tests/test_robustness.py > "$OUT/test_robustness.log" 2>&1; grep "^PASS\|ALL PASS\|Error" "$OUT/test_robustness.log" | cut -c1-120
-grep -q "ALL PASS" "$OUT/test_robustness.log" || bad "test_robustness"
+for t in test_robustness test_generalisation; do
+  PYTHONPATH=. timeout 1500 python -u tests/$t.py > "$OUT/$t.log" 2>&1; grep "^PASS\|ALL PASS\|Error" "$OUT/$t.log" | cut -c1-120
+  grep -q "ALL PASS" "$OUT/$t.log" || bad "$t"
+done
 
 if [ "${SCENARIOS:-1}" != "0" ]; then
-  step "5. scenarios (criteria on 16 other inputs)"
+  step "5. scenarios (criteria on 20 other inputs)"
   python scripts/scenarios.py check | tee "$OUT/scenarios.log" | cut -c1-120
   grep -q "RESULT: ALL SCENARIOS PASS" "$OUT/scenarios.log" || bad "scenarios"
 fi

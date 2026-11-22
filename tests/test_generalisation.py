@@ -1,7 +1,7 @@
 """
-Generalisation / anti-overfitting checks for the host path (the-prime-model-new).
+Generalisation / anti-overfitting checks for the host path (the-prime-model-new2; complements test_robustness.py).
 
-Run:  PYTHONPATH=. python tests/test_robustness.py      (a few minutes on one CPU)
+Run:  PYTHONPATH=. python tests/test_generalisation.py      (a few minutes on one CPU)
 
 0. Branch cuts of the NumPy shim (sqrt, arcsin, log10) match jax.numpy, signed zeros included (edge-cases bundle).
 1. Input-slot detection (`host._used_slots`) is structural: for every component function it covers every slot with a
