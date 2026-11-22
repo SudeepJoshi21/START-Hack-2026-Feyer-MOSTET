@@ -113,8 +113,15 @@ def pattern_arrays(simulation_arrays: dict, as_jax: bool = True) -> dict:
     # Noise functions (vacuum, loss, squeezer) do not depend on frequency. Unless a swept
     # parameter is one of their inputs, all expanded parameter rows give the same values.
     # (Idea and check from WS1, `_structure_arrays` on `ws1`.)
-    swept = set(np.asarray(simulation_arrays["carrier_changing_parameter_indices"]).ravel().tolist())
-    swept |= set(np.asarray(simulation_arrays["signal_changing_parameter_indices"]).ravel().tolist())
+    # Only sweeps with more than one value count: without a carrier sweep, `prepare_arrays` emits a
+    # dummy one-value carrier "sweep" of parameter index 0, and unused noise-input slots are padded
+    # with index 0, so counting it made every setup fall back to per-row noise values (fixed 2026-11-21).
+    # A real sweep of parameter 0 still falls back (conservative: per-row values are always correct).
+    swept = set()
+    for indices, values in (("carrier_changing_parameter_indices", "carrier_changing_values"),
+                            ("signal_changing_parameter_indices", "signal_changing_values")):
+        if np.asarray(simulation_arrays[values]).shape[1] > 1:
+            swept |= set(np.asarray(simulation_arrays[indices]).ravel().tolist())
     noise_inputs = set(np.asarray(simulation_arrays["noise_function_input_indices"]).ravel().tolist())
     if swept & noise_inputs:
         row_count = (np.asarray(simulation_arrays["carrier_changing_values"]).shape[1]

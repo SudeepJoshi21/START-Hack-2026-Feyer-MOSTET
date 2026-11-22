@@ -3,7 +3,8 @@ import os as _os
 # [host-native-xla-opt0] XLA CPU compile options. Backend optimisation level 0: the remaining XLA programs (benchmark readout, two
 # callbacks) compile ~2x faster (official benchmark 2.01 -> 1.63 s). The physics runs in NumPy/SciPy, so run time is
 # unaffected. Must be set before JAX creates its CPU backend; appended to any user flags; recorded by benchmark.py.
-# NEEDS ORGANISER APPROVAL before being part of a submission. Opt out: DIFFEROMETOR_XLA_OPT0=0.
+# The challenge places no restriction on XLA flags (confirmed by the team, 2026-11-21); on by default.
+# Opt out: DIFFEROMETOR_XLA_OPT0=0.
 #
 # [the-prime-model-new] two more compile-speed options for the same programs (outputs bitwise identical, checked with
 # benchmark.py --save-arrays): the legacy LLVM-IR fusion emitters instead of the MLIR-based ones, and no splitting of
