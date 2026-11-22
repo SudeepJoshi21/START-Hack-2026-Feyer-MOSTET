@@ -22,7 +22,24 @@ Sources: `benchmarks/cpu-baseline.json` (organisers), `benchmarks/final/` (ours,
 on the same EPYC), index in `benchmarks/README.md`. The EPYC node is shared: totals vary by about ±0.1 s, so we report
 medians (the step from 0.92 s to 0.83 s is the faster setup, −16 ms in an interleaved A/B, plus a quieter node).
 Without the XLA compile options (`DIFFEROMETOR_XLA_OPT0=0`) the total is 1.2–1.6 s depending on node load. On our laptop
-(Ryzen AI 7 350, 1 core) an earlier version ran in 1.68–2.33 s (8 runs).
+(Ryzen AI 7 350, 1 core) the current `main` runs in **1.76–1.82 s** once warm (2.0–2.6 s for the first run after a pause);
+an interleaved A/B with the previous version shows no difference on that machine.
+
+## It transfers to other optical setups
+
+The final evaluation uses an **unknown optical topology similar to the benchmark one**, so the simulator must take any setup
+definition, not just this fixture. Nothing in our code is specific to the benchmark: the sparsity pattern, the component
+groups and the solver are all derived from the setup at build time.
+
+| Organisers' aLIGO benchmark (`benchmark_aligo.py`, 101 freqs, 29 gradients) | Original code | Our `main` |
+|---|---:|---:|
+| First-run total | 25.3 s (organisers' Xeon, `benchmarks/aligo-cpu-baseline.json`) | **1.29 / 1.33 s** (laptop, 1 core) |
+| Max \|Δ ln S\| vs reference (aLIGO limit **1e-6**) | — | **3.8e-11** |
+| Fast host path used | — | yes, no fallback |
+
+Random 3×3 UIFOs (the same family as the benchmark, three modulation modes), a second trained UIFO, Voyager and aLIGO in
+several modes all run on the fast path and pass every judging criterion (`scripts/scenarios.py`, cluster). A setup outside the
+fast path's assumptions still runs, through the JAX path: slower, with the same results.
 
 ## What made it slow
 
@@ -47,8 +64,8 @@ Without the XLA compile options (`DIFFEROMETOR_XLA_OPT0=0`) the total is 1.2–1
    set in `differometor/__init__.py`. They don't change any number, are recorded in the benchmark report, and can be
    switched off with `DIFFEROMETOR_XLA_OPT0=0`.
 
-Everything is inside `differometor/`. `benchmark.py`, the input files and `requirements.txt` are byte-identical to the
-organisers' version. No precomputed results and no compilation cache; float64, all 101 frequencies, all 193 gradients.
+Everything is inside `differometor/`. `benchmark.py`, `benchmark_aligo.py`, the input files and `requirements.txt` are
+byte-identical to the organisers' latest version (upstream `83f8d2f`, merged into `main`). No precomputed results and no compilation cache; float64, all 101 frequencies, all 193 gradients.
 
 ## Correctness and robustness
 
@@ -94,7 +111,8 @@ pip install -r requirements.txt && pip install -e .
 python benchmark.py --cpus 1 --repeats 3 --output run.json --save-arrays run.npz   # prints PASS
 python scripts/check_correctness.py run.json run.npz                                # ALL CRITERIA PASS
 python tests/test_robustness.py && python tests/test_generalisation.py              # ALL PASS
-bash scripts/gate.sh     # everything: 6 official runs vs every criterion, determinism, all tests, 20 inputs (~25 min)
+python benchmark_aligo.py --cpus 1                                                  # organisers' smaller setup: PASS
+bash scripts/gate.sh     # cluster only (48 GB): 6 official runs vs every criterion, determinism, all tests, 20 inputs (~25 min)
 ```
 
 Details: [`docs/CHANGES.md`](docs/CHANGES.md) (every change, simple), [`docs/FINDINGS.md`](docs/FINDINGS.md)
