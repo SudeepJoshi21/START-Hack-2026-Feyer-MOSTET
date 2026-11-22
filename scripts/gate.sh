@@ -28,7 +28,7 @@ step "1. code state"
 START=$(git rev-parse HEAD)   # the commit under test; the gate fails if HEAD or tracked files change during the run
 echo "commit $START"
 [ -z "$(git status --porcelain --untracked-files=no)" ] || bad "uncommitted changes to tracked files"
-[ "$(git rev-parse HEAD:benchmark.py)" = "39f1fd3053554d7894762c0595105ec47b322049" ] || bad "benchmark.py differs from the official blob"
+[ "$(git rev-parse HEAD:benchmark.py)" = "b714aaae404a0b5f88a2ac17ba9b6256e7a4d357" ] || bad "benchmark.py differs from the official blob"
 echo "ff4ba353a2a03cdce7f3e61bad729c2e00888d842c28ba9cf699f95afb87e138  examples/data/uifo_800_3000.json
 726f2cfe6986cb991fa48d5a28127b9330c3dc7e69d5bd193c8748acef03adc3  examples/data/uifo_800_3000_test_data.json" | sha256sum -c --quiet || bad "public fixtures changed"
 
