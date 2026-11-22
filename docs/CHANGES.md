@@ -28,9 +28,15 @@ about half of its time just **compiling** the code with XLA.
 | 12 | Polishing: no imports or compiles that are not needed, smaller dual numbers, reused solver ordering, detector read-outs on the host | Each a few tens of ms | `165fbed`, `ea69003`, `f3215ef`, `445d9f2` | ZeyuuuChen |
 | 13 | Robustness: support for `sqrt`-linked parameters, refinement also for the signal solve, 16-input scenario tester (`scripts/scenarios.py`), judging-criteria checker (`scripts/check_correctness.py`), XLA flag checker | Works the same on other inputs, not just the benchmark | `3d4d9db`, `e864436`, `725a217` | ZeyuuuChen |
 | 14 | Merged into `main`, flags on | — | `c51a3d2` | SudeepJoshi21 |
-| 15 | Fix from the final review: at an exact singular point (e.g. a mirror with reflectivity exactly 1.0) the dual-number derivatives turned `∞ × 0` into NaN, which leaked into unrelated gradients (e.g. that mirror's tuning). A zero tangent now contributes exactly 0, as in JAX. Normal results are **bit-identical**. Plus `tests/test_robustness.py` | Correctness on unusual inputs | this commit | SudeepJoshi21 |
+| 15 | Fix from the final review: at an exact singular point (e.g. a mirror with reflectivity exactly 1.0) the dual-number derivatives turned `∞ × 0` into NaN, which leaked into unrelated gradients (e.g. that mirror's tuning). A zero tangent now contributes exactly 0, as in JAX. Normal results are **bit-identical**. Plus `tests/test_robustness.py` | Correctness on unusual inputs | `61a6aa4` | SudeepJoshi21 |
+| 16 | **Extra-precise signal solve** (mixed-precision refinement: residual in 80-bit `longdouble`). On Voyager in frequency-modulation mode, plain float64 was 1.1e-2 off in ln S (the original code: 3.7e-1); now 4.1e-6. The 16-input check now compares with a high-accuracy reference too | Correctness on hard setups (~60 ms) | `fc01438` | ZeyuuuChen |
+| 17 | **Inputs read by each component** are found from the code structure, not from the first data seen, plus `tests/test_generalisation.py` (finite differences off the benchmark point, cache leaks, process history) | No data-dependent shortcut (anti-overfitting); results bit-identical | `5277be3` | ZeyuuuChen |
+| 18 | **One BLAS thread inside the host code** (restored afterwards). Without CPU pinning, OpenBLAS started one thread per visible CPU, and `start_here.py` took 5–10 s on a shared node | `start_here.py` 5–10 s → 0.36 s; benchmark unaffected | `4c81eb9` | ZeyuuuChen |
+| 19 | Fix found with the **edge-cases bundle** (glass on a beamsplitter, total internal reflection): JAX's complex `arcsin`/`sqrt` ignore the sign of a zero imaginary part on the branch cut, NumPy does not, so at 225° the NumPy version took the other branch (sensitivity 180× off). The NumPy version now follows JAX. Four edge cases added to `scripts/scenarios.py` (20 inputs) | Correctness on unusual setups; benchmark bit-identical | `911074c` | ZeyuuuChen |
+| 20 | Research report "batched fixed-pivot LU" fact-checked and prototyped (`experiments/research_report/`): its facts about SciPy hold, its speed-ups do not apply here (measured), so nothing was adopted | — | `242f4be` | ZeyuuuChen |
+| 21 | `scripts/gate.sh`: one command for all checks (repeated official runs against every judging criterion, determinism, all tests, 20 inputs vs the original code) | Verification | `a6d9bb5`, `57a0e25` | ZeyuuuChen |
 
-Branches merged on the way: `ws2-adjoint`, `ws1`, `ws3`, `ws4` → `integration` → `the-prime-model-new` → `main`.
+Branches merged on the way: `ws2-adjoint`, `ws1`, `ws3`, `ws4` → `integration` → `the-prime-model-new` → `main` → `the-prime-model-new2` (merged back into `main` for the submission).
 Tried and **not** used: `trig-opt` (real-valued maths inside the JAX path, −8 s there, not needed once the physics left
 JAX), static index pytrees (no gain after WS3), block-triangular solver split (no gain), other XLA flags (no gain).
 
@@ -46,7 +52,7 @@ Checked on `main` (laptop, 1 CPU). Test file: `tests/test_robustness.py` (compar
 | Same input twice | PASS: bit-identical |
 | Other setups run earlier in the same process | PASS: bit-identical gradient |
 | 8 official runs, random hash seeds | all outputs **bit-identical**; only the timing varies (see below) |
-| Other setups (aLIGO, Voyager, cavity, random UIFOs, 400 frequencies, wideband, second trained UIFO) | 16-scenario check by ZeyuuuChen on EPYC: ALL criteria PASS (`3d4d9db`); not re-run here (the original code needs ~14 GB at 101 frequencies) |
+| Other setups (aLIGO, Voyager, cavity, random UIFOs, 400 frequencies, wideband, second trained UIFO) and the 4 edge cases of the edge-cases bundle (total internal reflection at 45/135/225°, glass) | 20-input check on EPYC (`scripts/gate.sh`, commit `57a0e25`): ALL criteria PASS vs the original code and a high-accuracy reference (`benchmarks/final/scenarios-check-20.txt`); the edge-cases bundle's own `check_setups.py`: 11/11 setups ok |
 | Anything the fast path does not support | falls back to the JAX path automatically (slower, same results); a non-real link derivative raises a clear error instead of returning a wrong gradient |
 
 Known limits (same for the original code): at reflectivity exactly 1.0 some gradients are infinite; very small gradient
@@ -61,8 +67,8 @@ Measure with nothing else running and report the median of ≥ 5 runs. Details: 
 ## Result
 | | Original code | Our `main` |
 |---|---:|---:|
-| Official `benchmark.py --cpus 1` (organisers' Xeon / our laptop) | 44.2 s (Xeon) | **~2 s** (laptop), ~1.2 s (teammate's EPYC) |
-| Compile | 22.9 s | ~0.3 s |
-| Forward + gradient run | 17.6 s | ~0.5 s |
+| Official `benchmark.py --cpus 1` (organisers' Xeon / same EPYC) | 44.2 s (Xeon) / 72.5 s (EPYC) | **0.92 s** median of 5 on the EPYC (`benchmarks/final/`), ~2 s on our laptop |
+| Compile | 22.9 s (Xeon) / 38.5 s (EPYC) | 0.11 s (EPYC) |
+| Forward + gradient run | 17.6 s (Xeon) / 25.7 s (EPYC) | 0.29 s (EPYC) |
 | Peak memory | ~14.4 GB | < 1 GB |
-| Correctness | — | all judging criteria PASS; all 193 gradients within 2e-5 of the original code |
+| Correctness | — | all judging criteria PASS on every run; all 193 gradients within 3.6e-8 (relative to the largest) of the original code; 20 further inputs PASS |

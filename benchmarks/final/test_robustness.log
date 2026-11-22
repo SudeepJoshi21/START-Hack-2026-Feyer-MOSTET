@@ -1,0 +1,10 @@
+PASS design variables +-1%              |dln S| 3.3e-09   grad per-entry 4.5e-08   norm-wise 2.2e-10
+PASS design variables +-10%             |dln S| 3.8e-11   grad per-entry 6.5e-11   norm-wise 2.5e-12
+PASS 1 frequency                        |dln S| 2.3e-09   grad per-entry 3.1e-04   norm-wise 2.7e-07
+PASS 2 frequencies                      |dln S| 9.6e-09   grad per-entry 2.8e-06   norm-wise 1.5e-06
+PASS 7 random frequencies               |dln S| 2.5e-09   grad per-entry 1.4e-05   norm-wise 8.7e-09
+PASS reflectivity = 1.0: same 2 non-finite entries as original, others rel 5.5e-05
+PASS forward cache: gradient of p1 unchanged after forward(p2)
+PASS deterministic: repeat run bit-identical
+PASS slot cache: gradient identical whether or not other setups ran first
+ALL PASS

@@ -1,0 +1,11 @@
+PASS test_used_slots_structural: {'force_calculation_right': [0, 1, 2], 'laser': [0, 1], 'surface': [0, 1, 2, 3, 4, 5, 6], 'space': [0, 1, 2], 'space_modulation': [0, 1, 2], 'signal_function': [0, 1], 'dummy_function': [], 'vacuum_quantum_noise': [], 'loss_quantum_noise': [0], 'space_lower': [0, 1, 2], 'laser_amplitude_modulation': [], 'laser_frequency_modulation': [0], 'susceptibility': [0, 1], 'force_calculation_left': [0], 'corrected_optomechanical_phase_left': [0, 1, 2, 3, 4, 5], 'corrected_optomechanical_phase_right': [0, 1, 2, 3, 4, 5, 6], 'space_modulation_lower': [0, 1, 2], 'squeezer': [0, 1], 'laser_frequency_modulation_lower': [0]}
+PASS test_branch_cuts_match_jax (sqrt, arcsin, log10 values and derivatives, signed zeros)
+PASS test_forward_cache_does_not_leak (interleaved == fresh, bitwise; p1 and p2 gradients differ)
+   ('ml11', 'tuning'): autodiff +1.803065e-01  central difference +1.803065e-01
+   ('mt11', 'tuning'): autodiff +1.275568e-01  central difference +1.275568e-01
+   ('center12', 'tuning'): autodiff -3.103854e-02  central difference -3.103854e-02
+   ('mr23_m24', 'length'): autodiff -3.856596e-07  central difference -3.856648e-07
+   ('boundary20', 'db'): autodiff -8.957173e-08  central difference -8.957102e-08
+PASS test_gradient_finite_differences_off_benchmark_point (5 variables, design point perturbed +-5%)
+PASS test_process_history_does_not_matter (after Voyager/aLIGO runs == fresh process, bitwise)
+ALL PASS
