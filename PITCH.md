@@ -49,7 +49,8 @@ Notes:
 ## What made it slow
 
 1. **Three dense 751×751 solves per frequency**, for a matrix that is **99.5 % zeros**.
-2. **A ~9 GB autodiff "tape"**, because JAX stored every intermediate for the gradient. That is why the original does not fit in
+2. **~9 GB saved for the gradient.** The benchmark keeps the forward pass's residuals for the separately compiled reverse
+   pass; with plain JAX autodiff that meant every intermediate. That is why the original does not fit in
    the 7 GB available to WSL2.
 3. **Compilation**: XLA compiled all 19 component formulas for every matrix entry, plus their derivatives. On aLIGO that
    is 65 of the 72 seconds.
@@ -61,7 +62,8 @@ Notes:
    accuracy (the signal solve's residuals in 80-bit `longdouble`). On the laptop one dense 751×751 solve takes ~60 ms; the
    sparse factorisation takes a few ms.
 2. **A hand-written gradient (adjoint method).** One transposed solve with the same factorisation gives the gradient,
-   and the matrix gradient is formed only on the non-zeros. The 9 GB tape is gone.
+   and the matrix gradient is formed only on the non-zeros. We still save residuals for the reverse pass, but only what the
+   gradient needs (inputs, factorisations, solutions): tens of MB instead of ~9 GB.
 3. **No physics left for XLA to compile.** The whole simulation runs as NumPy/SciPy code behind a single `jax.custom_vjp`.
    The physics formulas in `components.py` are **reused unchanged** (re-bound to NumPy), and their derivatives come from
    forward-mode dual numbers. XLA sees only two callbacks: on the laptop, compile drops from 26.0 s (pure-JAX version) to

@@ -132,8 +132,8 @@
     <div class="row">
       <div class="col card"><div class="num-idea">3×</div><h3>Dense solves</h3>
         <p>Three dense 751×751 factorisations per frequency, for a matrix that is <b>99.5 % zeros</b> (2,537 non-zeros).</p></div>
-      <div class="col card"><div class="num-idea">9 GB</div><h3>Autodiff tape</h3>
-        <p>JAX stored every intermediate for the gradient, including full-size matrix copies. Peak memory ~14 GB.</p></div>
+      <div class="col card"><div class="num-idea">9 GB</div><h3>Saved for the gradient</h3>
+        <p>The benchmark keeps the forward pass's residuals for the gradient; with plain JAX autodiff that meant every intermediate: ~9 GB. Peak memory ~14 GB.</p></div>
       <div class="col card"><div class="num-idea">~50 %</div><h3>Compilation</h3>
         <p>XLA compiled all 19 component formulas for every matrix entry, plus their derivatives, in complex arithmetic.</p></div>
     </div>
@@ -184,7 +184,7 @@ b̄    = λ
       <div class="col card">
         <h3>Effect</h3>
         <ul>
-          <li>No 9 GB tape: only the matrix values and the solutions are kept</li>
+          <li>We still save residuals for the reverse pass, but only what the gradient needs (inputs, factorisations, solutions): tens of MB instead of ~9 GB</li>
           <li>No full 751×751 gradient matrix per frequency</li>
           <li>Memory: the original needs <b>~14 GB</b> and does not fit in the 7 GB available to WSL2 on our machine; ours runs comfortably</li>
         </ul>
