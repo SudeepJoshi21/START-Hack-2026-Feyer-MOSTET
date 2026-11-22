@@ -1,0 +1,482 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Faster Physics Pitch</title>
+<!-- START Hack Munich 2026, Feyer challenge. 11 slides, 1920x1080, self-contained apart from the Inter font (Google Fonts).
+     Keys: arrows / space / PageUp-PageDown to navigate, N speaker notes, F fullscreen, Home/End. Print (Ctrl+P) gives one slide per page. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* Apple-inspired light theme: soft greys, white rounded cards, one blue accent */
+:root {
+  --bg: #F5F5F7;
+  --card: #FFFFFF;
+  --hero-top: #FFFFFF;
+  --hero-bottom: #EAF1FC;
+  --ink: #1D1D1F;
+  --ink-2: #424245;
+  --muted: #6E6E73;
+  --accent: #0066CC;
+  --accent-soft: #E8F0FB;
+  --rule: #D2D2D7;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 12px 32px rgba(0, 0, 0, 0.07);
+  --s1: #0071E3;
+  --s2: #FF9F0A;
+  --s3: #5E5CE6;
+  --s4: #34C759;
+  --s5: #E8395F;
+  --s6: #FFD60A;
+  --fill-text: #FFFFFF;
+  --fill-text-dark: #1D1D1F;
+}
+
+body { font-family: 'Inter', Arial, sans-serif; }
+
+section {
+  padding: 128px;
+  background: var(--bg);
+  color: var(--ink-2);
+  font-family: 'Inter', Arial, sans-serif;
+  display: flex;
+  flex-direction: column;
+  gap: 40px;
+  box-sizing: border-box;
+}
+section.hero { background: linear-gradient(180deg, var(--hero-top) 0%, var(--hero-bottom) 100%); }
+section.footed { padding: 128px 128px 160px; }
+section.tight { gap: 28px; }
+
+h1, h2, h3 { font-family: 'Inter', Arial, sans-serif; color: var(--ink); margin: 0; }
+h1 { font-size: 132px; line-height: 1.02; font-weight: 700; letter-spacing: -5px; }
+h2 { font-size: 72px; line-height: 1.08; font-weight: 700; letter-spacing: -2px; }
+h3 { font-size: 44px; line-height: 1.15; font-weight: 600; letter-spacing: -0.5px; }
+p { font-size: 32px; line-height: 1.4; margin: 0; }
+
+.eyebrow { font-size: 28px; font-weight: 600; letter-spacing: 0; color: var(--accent); }
+.lede { font-size: 32px; color: var(--muted); max-width: 1500px; }
+.label { font-size: 24px; line-height: 1.35; color: var(--muted); }
+.footer { position: absolute; left: 128px; bottom: 64px; width: 1664px; font-size: 24px; line-height: 1.3; color: var(--muted); }
+.spacer { flex: 1; }
+
+/* figures */
+.figure-row { display: flex; align-items: stretch; gap: 32px; }
+.figure { display: flex; flex-direction: column; justify-content: flex-end; gap: 8px; background: var(--card); border-radius: 32px; padding: 36px 44px; box-shadow: var(--shadow); }
+.figure .num { font-family: 'Inter', Arial, sans-serif; font-size: 52px; font-weight: 700; line-height: 1.1; letter-spacing: -1px; color: var(--ink); }
+.figure .hero { font-family: 'Inter', Arial, sans-serif; font-size: 120px; font-weight: 700; line-height: 1.0; letter-spacing: -4px; color: var(--accent); }
+.figure .num-light { font-family: 'Inter', Arial, sans-serif; font-size: 52px; font-weight: 700; line-height: 1.1; color: var(--ink); }
+
+/* segmented bar: one rounded capsule split into parts */
+.segbar { display: flex; gap: 3px; width: 1664px; height: 56px; border-radius: 14px; overflow: hidden; }
+.seg { flex-basis: 0; min-width: 0; display: flex; align-items: center; }
+.seg .in { font-size: 24px; font-weight: 600; color: var(--fill-text); white-space: nowrap; padding-left: 20px; }
+.seg .in-dark { font-size: 24px; font-weight: 600; color: var(--fill-text-dark); white-space: nowrap; padding-left: 20px; }
+.c2 .in { color: var(--fill-text-dark); }
+.c1 { background: var(--s1); }
+.c2 { background: var(--s2); }
+.c3 { background: var(--s3); }
+.c4 { background: var(--s4); }
+.c5 { background: var(--s5); }
+.c6 { background: var(--s6); }
+.legend { display: flex; flex-wrap: wrap; gap: 20px 48px; }
+.key { display: flex; align-items: center; gap: 14px; }
+.swatch { width: 24px; height: 24px; border-radius: 12px; }
+.key .name { font-size: 24px; color: var(--muted); }
+.key .name b { color: var(--ink); }
+
+/* cards */
+.cards { display: flex; gap: 32px; }
+.card { flex: 1; background: var(--card); border-radius: 32px; padding: 44px 40px; display: flex; flex-direction: column; gap: 20px; box-shadow: var(--shadow); }
+.card .step { font-size: 24px; font-weight: 600; color: var(--accent); }
+.card .body { font-size: 28px; line-height: 1.4; color: var(--ink-2); }
+
+/* statement slide */
+.statement { max-width: 1500px; }
+.code { font-family: 'Courier New', monospace; }
+
+/* results table */
+.results { width: 1664px; font-size: 32px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.results .hl { color: var(--accent); }
+
+/* tiles */
+.tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+.tile { background: var(--card); border-radius: 32px; padding: 32px 40px; display: flex; flex-direction: column; gap: 12px; box-shadow: var(--shadow); }
+.tile .num-light { font-family: 'Inter', Arial, sans-serif; font-size: 40px; font-weight: 700; line-height: 1.1; letter-spacing: -0.5px; color: var(--ink); }
+.tile .body { font-size: 26px; line-height: 1.4; color: var(--ink-2); }
+
+/* closing */
+.lessons { display: flex; flex-direction: column; gap: 36px; max-width: 1500px; }
+.lesson { display: flex; gap: 32px; align-items: flex-start; }
+.lesson .idx { font-family: 'Inter', Arial, sans-serif; font-size: 30px; font-weight: 700; line-height: 1; color: var(--fill-text); background: var(--accent); width: 60px; height: 60px; border-radius: 30px; flex: none; display: flex; align-items: center; justify-content: center; }
+.lesson .text { font-size: 32px; line-height: 1.4; color: var(--ink-2); padding-top: 6px; }
+.lesson .text b { color: var(--ink); }
+
+/* arrival motion: content fades up, staged; the plain rule is the finished look */
+@keyframes rise { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: translateY(0); } }
+.reveal { animation: rise 600ms cubic-bezier(0.22, 1, 0.36, 1) both; animation-delay: calc(var(--i, 0) * 110ms); }
+
+/* step chips: one colour per step, same order as the step table */
+.chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.chip { font-size: 24px; font-weight: 700; line-height: 1; color: var(--fill-text); border-radius: 18px; padding: 7px 14px; }
+.chip.c2, .chip.c4, .chip.c6 { color: var(--fill-text-dark); }
+
+/* approach: before / after flow */
+.flow { display: flex; flex-direction: column; gap: 20px; }
+.flowrow { display: flex; align-items: stretch; gap: 14px; }
+.flowlabel { width: 150px; flex: none; font-family: 'Inter', Arial, sans-serif; font-size: 32px; font-weight: 700; letter-spacing: -0.5px; color: var(--ink); display: flex; align-items: center; }
+.box { flex: 1; min-width: 0; background: var(--card); border-radius: 28px; padding: 20px 24px; display: flex; flex-direction: column; gap: 10px; box-shadow: var(--shadow); }
+.box.old { background: transparent; border: 2px solid var(--rule); box-shadow: none; }
+.box .t { font-size: 28px; font-weight: 600; line-height: 1.2; color: var(--ink); }
+.box .d { font-size: 24px; line-height: 1.35; color: var(--ink-2); }
+.arrow { flex: none; font-size: 32px; color: var(--muted); display: flex; align-items: center; }
+
+/* step table */
+.steps { width: 1664px; border-collapse: collapse; font-size: 28px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.steps th { font-size: 24px; font-weight: 600; color: var(--muted); text-align: left; padding: 0 12px 10px; }
+.steps td { padding: 6px 12px; border-top: 1px solid var(--rule); vertical-align: middle; }
+.steps .r { text-align: right; }
+.steps .base td { color: var(--muted); }
+.steps .total td { font-weight: 700; color: var(--accent); border-top: 2px solid var(--ink); }
+
+/* list on the compiler slide */
+.points { display: flex; flex-direction: column; gap: 18px; max-width: 1500px; }
+.points p { font-size: 30px; line-height: 1.4; color: var(--ink-2); }
+.points p b { color: var(--ink); }
+
+/* eyebrow or lede with a chip beside it */
+.eyebrow-row { display: flex; align-items: center; gap: 16px; }
+
+/* tile header row with a chip */
+.tilehead { display: flex; align-items: center; gap: 16px; }
+
+/* two-column panels */
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; align-items: stretch; }
+.cols3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 32px; align-items: stretch; }
+.panel { background: var(--card); border-radius: 32px; padding: 40px 44px; display: flex; flex-direction: column; gap: 18px; box-shadow: var(--shadow); }
+.panel .ptitle { font-size: 28px; font-weight: 700; line-height: 1.25; color: var(--ink); }
+.panel .pt { font-size: 28px; line-height: 1.4; color: var(--ink-2); }
+.panel .pt b { color: var(--ink); }
+.panel .note { font-size: 24px; line-height: 1.4; color: var(--muted); }
+.panel .big { font-size: 72px; font-weight: 700; line-height: 1.05; letter-spacing: -2px; color: var(--accent); }
+.panel .result { font-size: 28px; font-weight: 700; line-height: 1.3; color: var(--accent); padding-top: 18px; border-top: 1px solid var(--rule); }
+
+/* formula and code boxes */
+.mathbox { background: var(--accent-soft); border-radius: 20px; padding: 18px 28px; }
+.mathbox .formula { font-size: 40px; font-weight: 600; line-height: 1.2; color: var(--ink); text-align: center; }
+.codegrid { display: grid; grid-template-columns: 390px 1fr; gap: 10px 20px; background: var(--bg); border-radius: 20px; padding: 24px 28px; }
+.codegrid .cd { font-family: 'Courier New', monospace; font-size: 24px; line-height: 1.35; color: var(--ink); }
+.codegrid .cm { font-size: 24px; line-height: 1.45; color: var(--muted); }
+
+/* horizontal comparison bars */
+.bars { display: flex; flex-direction: column; gap: 22px; }
+.bar { display: flex; align-items: center; gap: 20px; }
+.bar .bl { width: 230px; flex: none; font-size: 26px; line-height: 1.25; color: var(--ink-2); }
+.track { flex: 1; height: 20px; background: #E8E8ED; border-radius: 10px; overflow: hidden; display: flex; }
+.fill { height: 20px; min-width: 10px; border-radius: 10px; background: var(--accent); }
+.fill.grey { background: #8E8E93; }
+.bar .bv { width: 130px; flex: none; text-align: right; font-size: 28px; font-weight: 700; color: var(--ink); }
+
+/* diagnosis stat cards */
+.stat .big { font-size: 96px; font-weight: 700; line-height: 1; letter-spacing: -3px; color: var(--accent); }
+.stat .ptitle { font-size: 32px; }
+
+/* speed-up bar chart (results slide) */
+.speedwrap { display: grid; grid-template-columns: 1fr 460px; gap: 32px; align-items: stretch; }
+.speed { display: flex; flex-direction: column; gap: 30px; }
+.srow { display: flex; align-items: center; gap: 28px; }
+.srow .sl { width: 330px; flex: none; display: flex; flex-direction: column; gap: 4px; }
+.srow .sn { font-size: 28px; font-weight: 600; line-height: 1.2; color: var(--ink); }
+.srow .ss { font-size: 24px; line-height: 1.3; color: var(--muted); font-variant-numeric: tabular-nums; }
+.strack { flex: 1; height: 40px; background: #E8E8ED; border-radius: 20px; overflow: hidden; display: flex; }
+.sfill { height: 40px; min-width: 20px; border-radius: 20px; }
+.srow .sv { width: 130px; flex: none; text-align: right; font-size: 36px; font-weight: 700; letter-spacing: -0.5px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.srow .snote { flex: 1; font-size: 24px; line-height: 1.3; color: var(--muted); }
+.srow.muted .sn { color: var(--muted); }
+.totalcard .huge { font-size: 132px; font-weight: 700; line-height: 1; letter-spacing: -5px; color: var(--accent); }
+.totalcard .sub { font-size: 32px; font-weight: 700; line-height: 1.3; color: var(--ink); font-variant-numeric: tabular-nums; }
+/* ---- standalone viewer ---- */
+html, body { margin: 0; height: 100%; background: #0b1119; overflow: hidden; }
+#stage { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 0 0; }
+#stage > section { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; margin: 0; }
+#stage > section:not(.active) { display: none; }
+#stage aside { display: none; }
+#notes { position: fixed; left: 0; right: 0; bottom: 0; max-height: 30vh; overflow: auto; background: rgba(11,17,25,.94); color: #F3F1EC;
+  font: 18px/1.5 Inter, Arial, sans-serif; padding: 14px 20px 16px; display: none; box-sizing: border-box; border-top: 2px solid #EB6834; }
+body.show-notes #notes { display: block; }
+#pager { position: fixed; right: 14px; bottom: 10px; font: 600 14px Inter, Arial, sans-serif; color: #C3C2B7; opacity: .7; }
+body.show-notes #pager { display: none; }
+@media print {
+  @page { size: 1920px 1080px; margin: 0; }
+  html, body { overflow: visible; height: auto; background: none; }
+  #stage { position: static; transform: none !important; width: auto; height: auto; }
+  #stage > section, #stage > section:not(.active) { display: flex; position: relative; page-break-after: always; break-after: page; }
+  .reveal { animation: none; }
+  #notes, #pager { display: none !important; }
+}
+</style>
+</head>
+<body>
+<div id="stage">
+<section id="cover" class="hero footed" data-transition="fade">
+<p class="eyebrow reveal" style="--i:0">START Hack Munich 2026 · Feyer challenge</p>
+<h1 class="reveal" style="--i:1">Faster Physics</h1>
+<p class="lede reveal" style="--i:2">Differometor’s complete benchmark run, with 101 frequencies, 193 gradients and float64 throughout, on one CPU core.</p>
+<div class="spacer"></div>
+<div class="figure-row reveal" style="--i:3">
+<div class="figure"><p class="num">66.8 s</p><p class="label">original code, first run</p></div>
+<div class="figure"><p class="hero">0.73 s</p><p class="label">our code, same machine</p></div>
+<div class="figure"><p class="num">92× faster</p><p class="label">same physics, all criteria pass</p></div>
+</div>
+<p class="footer">[Team names] · official benchmark.py, unchanged · AMD EPYC 7763, one core · ours: median of 5 runs</p>
+<aside>Differometor’s full benchmark, 101 frequencies and 193 gradients in float64, took 67 seconds on one CPU core. On the same machine our version takes 0.73 seconds: 92 times faster, with the same physics and every judging criterion passing.</aside>
+</section>
+
+<section id="problem" class="footed" data-transition="fade">
+<p class="eyebrow reveal" style="--i:0">Why it was slow</p>
+<h2 class="reveal" style="--i:1">More than half of the 67 seconds was compiling</h2>
+<p class="lede reveal" style="--i:2">The original code solved three dense 751 × 751 complex systems per frequency, kept a 9 GB autodiff tape, and had XLA compile every component formula for every matrix entry.</p>
+<div class="spacer"></div>
+<div class="segbar reveal" style="--i:3" role="img" aria-label="Original first-run total 66.8 s: imports 0.48 s (0.7%), build 1.38 s (2%), tracing and compiling 37.6 s (56%), forward simulation 22.5 s (34%), gradient 4.8 s (7%), sensitivity 1.5 ms">
+<div class="seg c1" style="flex-grow:477.7"></div>
+<div class="seg c2" style="flex-grow:1378.0"></div>
+<div class="seg c3" style="flex-grow:37613.3"><p class="in">56 %</p></div>
+<div class="seg c4" style="flex-grow:22521.1"><p class="in-dark">34 %</p></div>
+<div class="seg c5" style="flex-grow:4802.5"><p class="in">7 %</p></div>
+</div>
+<div class="legend reveal" style="--i:4">
+<div class="key"><div class="swatch c1"></div><p class="name"><b>Imports</b> 0.48 s (0.7 %)</p></div>
+<div class="key"><div class="swatch c2"></div><p class="name"><b>Build</b> the setup 1.38 s (2 %)</p></div>
+<div class="key"><div class="swatch c3"></div><p class="name"><b>Tracing + compiling</b> 37.6 s</p></div>
+<div class="key"><div class="swatch c4"></div><p class="name"><b>Forward</b> simulation 22.5 s</p></div>
+<div class="key"><div class="swatch c5"></div><p class="name"><b>Gradient</b> 4.8 s</p></div>
+</div>
+<p class="footer">Original code (commit 02ec741), first run, official benchmark.py, AMD EPYC 7763, one core. Organisers’ Intel Xeon baseline: 44.2 s.</p>
+<aside>Here is where the original 67 seconds went. Each run solves a 751-unknown complex system at 101 frequencies, three times each, with a 9 gigabyte autodiff tape. But more than half of the time is XLA compiling the physics, not solving it.</aside>
+</section>
+
+<section id="diagnosis" data-transition="fade">
+<p class="eyebrow reveal" style="--i:0">Diagnosis</p>
+<h2 class="reveal" style="--i:1">Three reasons it was slow</h2>
+<div class="cols3">
+<div class="panel stat reveal" style="--i:2"><p class="big">3×</p><p class="ptitle">Dense solves</p><p class="pt">Three dense 751 × 751 complex solves per frequency, for a matrix that is <b>99.5 % zeros</b> (2,597 non-zero entries).</p></div>
+<div class="panel stat reveal" style="--i:3"><p class="big">9 GB</p><p class="ptitle">Saved for the gradient</p><p class="pt">The benchmark keeps the forward pass’s residuals for the gradient; with plain JAX autodiff that meant every intermediate: a 9 GB tape.</p></div>
+<div class="panel stat reveal" style="--i:4"><p class="big">56 %</p><p class="ptitle">Compilation</p><p class="pt">XLA compiled all 19 component formulas for every matrix entry, plus their derivatives, in complex arithmetic: 37.6 s of 66.8 s.</p></div>
+</div>
+<p class="lede reveal" style="--i:5">The lesson we kept relearning: <b>profile first</b>. After the solver was fixed, compiling was 90 % of the run.</p>
+<aside>Three things made the original slow. First, three dense solves per frequency on a matrix that is 99.5 percent zeros. Second, plain JAX autodiff saved every intermediate for the gradient: a 9 gigabyte tape. Third, more than half the run was XLA compiling the physics formulas. And once we fixed the solver, compiling was 90 percent of what was left: profile first.</aside>
+</section>
+
+<section id="linalg" data-transition="fade">
+<p class="eyebrow reveal" style="--i:0">Idea 1 of 4</p>
+<h2 class="reveal" style="--i:1">Less linear algebra</h2>
+<div class="cols">
+<div class="panel reveal" style="--i:2">
+<p class="pt">The noise needs <b>w = A⁻ᴴc</b> and then <b>A⁻¹Qw</b>. Since cᴴA⁻¹ = wᴴ:</p>
+<div class="mathbox"><p class="formula">noise ∝ Re(wᴴ Q w)</p></div>
+<p class="pt">so the third solve is redundant: <b>two solves, not three</b>.</p>
+<p class="pt">The other two share <b>one sparse LU</b> (SciPy SuperLU) on the fixed 2,597-entry pattern.</p>
+<p class="pt"><b>Iterative refinement</b> keeps it accurate on hard setups such as Voyager.</p>
+</div>
+<div class="panel reveal" style="--i:3">
+<p class="ptitle">Per factorisation, one 751 × 751 complex system</p>
+<div class="bars">
+<div class="bar"><p class="bl">Dense LU</p><div class="track"><div class="fill grey" style="width:100%"></div></div><p class="bv">36 ms</p></div>
+<div class="bar"><p class="bl">Sparse LU</p><div class="track"><div class="fill" style="width:1.7%"></div></div><p class="bv">0.6 ms</p></div>
+</div>
+<p class="big">60× cheaper</p>
+<p class="result">Forward simulation 14.7 s → 0.20 s</p>
+</div>
+</div>
+<aside>Idea one: do less linear algebra. The noise formula can be rewritten as the real part of w-Hermitian Q w, so the third solve per frequency is redundant. The other two share one sparse LU factorisation on the fixed pattern, 60 times cheaper than dense. Iterative refinement keeps hard setups like Voyager accurate. The forward run fell from 14.7 seconds to 0.2.</aside>
+</section>
+
+<section id="adjoint" data-transition="fade">
+<p class="eyebrow reveal" style="--i:0">Idea 2 of 4</p>
+<h2 class="reveal" style="--i:1">A hand-written gradient (adjoint method)</h2>
+<div class="cols">
+<div class="panel reveal" style="--i:2">
+<p class="pt">For <b>A x = b</b> and the incoming gradient <b>x̄</b>:</p>
+<div class="codegrid">
+<p class="cd">λ = A⁻ᵀ x̄</p><p class="cm">same LU, one solve</p>
+<p class="cd">b̄ = λ</p><p class="cm"></p>
+<p class="cd">Ā[k] = −λ[row_k] · x[col_k]</p><p class="cm">non-zeros only</p>
+</div>
+<p class="note">Checked against JAX’s own autodiff. It is the plain transpose, not the conjugate one: JAX uses the plain transpose for holomorphic maps.</p>
+</div>
+<div class="panel reveal" style="--i:3">
+<p class="ptitle">Effect</p>
+<p class="pt">We still save residuals for the reverse pass, but <b>only what the gradient needs</b> (inputs, factorisations, solutions) instead of the 9 GB tape.</p>
+<p class="pt"><b>No full 751 × 751 gradient matrix</b> per frequency: all 193 gradients are formed on the non-zeros only.</p>
+<p class="result">Gradient 3.4 s → 0.12 s</p>
+</div>
+</div>
+<aside>Idea two: write the gradient by hand with the adjoint method. One extra solve with the transposed matrix, reusing the same LU factors, gives lambda; the matrix gradient is then only needed on the non-zero entries. We checked it against JAX's own autodiff. Instead of a 9 gigabyte tape we keep only inputs, factors and solutions, and the gradient went from 3.4 seconds to 0.12.</aside>
+</section>
+
+<section id="numpy" data-transition="fade">
+<p class="eyebrow reveal" style="--i:0">Idea 3 of 4</p>
+<h2 class="reveal" style="--i:1">No physics left for XLA to compile</h2>
+<div class="cols">
+<div class="panel reveal" style="--i:2">
+<p class="pt">The whole simulation runs as <b>NumPy / SciPy</b> code behind a single <b>jax.custom_vjp</b>.</p>
+<p class="pt"><b>Same physics source:</b> the formulas in components.py are reused unchanged, re-bound to NumPy.</p>
+<p class="pt">Derivatives come from <b>forward-mode dual numbers</b> running that same code: exact, no finite differences.</p>
+<p class="pt">XLA sees only <b>two callbacks</b>.</p>
+</div>
+<div class="panel reveal" style="--i:3">
+<p class="ptitle">Tracing + compiling, main benchmark</p>
+<div class="bars">
+<div class="bar"><p class="bl">Before (pure JAX)</p><div class="track"><div class="fill grey" style="width:100%"></div></div><p class="bv">14.3 s</p></div>
+<div class="bar"><p class="bl">Physics in NumPy</p><div class="track"><div class="fill" style="width:4.3%"></div></div><p class="bv">0.61 s</p></div>
+</div>
+<p class="note">The trade-off: the forward run went from 0.20 s to 0.31 s, because NumPy is slower here than compiled code. In exchange, 13.7 s of compiling disappeared (0.13 s today).</p>
+</div>
+</div>
+<aside>Idea three: leave nothing for XLA to compile. The whole simulation runs as NumPy and SciPy behind one custom VJP. The physics formulas are the same file, re-bound to NumPy, and dual numbers give exact derivatives from that same code. XLA only sees two callbacks, so compiling fell from 14.3 seconds to 0.61. The forward run got slightly slower, a trade we gladly made.</aside>
+</section>
+
+<section id="startup" data-transition="fade">
+<p class="eyebrow reveal" style="--i:0">Idea 4 of 4</p>
+<h2 class="reveal" style="--i:1">Startup and compile polish</h2>
+<div class="cols3">
+<div class="panel reveal" style="--i:2">
+<p class="ptitle">Setup</p>
+<p class="pt">No tiny XLA compiles while building the setup.</p>
+<p class="pt">Plotting and scipy.sparse are imported only when needed.</p>
+<div class="spacer"></div>
+<p class="result">Build 1.38 s → 0.083 s</p>
+</div>
+<div class="panel reveal" style="--i:3">
+<p class="ptitle">XLA options</p>
+<p class="pt">Three compile options (optimisation level 0 plus two code-generation options), set in differometor/__init__.py.</p>
+<p class="pt">No number changes: bit-identical outputs.</p>
+<p class="pt">Recorded in the benchmark report; off with DIFFEROMETOR_XLA_OPT0=0.</p>
+<div class="spacer"></div>
+<p class="result">Compiling 0.44 s → 0.13 s</p>
+</div>
+<div class="panel reveal" style="--i:4">
+<p class="ptitle">Smaller wins</p>
+<p class="pt">Dual numbers only on the inputs a formula reads.</p>
+<p class="pt">Solver ordering reused across frequencies.</p>
+<p class="pt">Detector read-outs in NumPy too.</p>
+<div class="spacer"></div>
+<p class="result">Forward 0.31 s → 0.12 s</p>
+</div>
+</div>
+<aside>Idea four is polish. Building the setup no longer triggers tiny XLA compiles, and heavy imports load only when needed. Three XLA compile options cut what is left of compiling without changing a single output bit, and they can be switched off. Smaller wins: dual numbers only where needed, a reused solver ordering, and read-outs in NumPy.</aside>
+</section>
+
+<section id="stages" class="footed" data-transition="fade">
+<p class="eyebrow reveal" style="--i:0">Results</p>
+<h2 class="reveal" style="--i:1">Every stage we control got 17 to 350 times faster</h2>
+<div class="speedwrap">
+<div class="panel speed">
+<div class="srow reveal" style="--i:2"><div class="sl"><p class="sn">Tracing + compiling</p><p class="ss">37.6 s → 0.108 s</p></div><div class="strack"><div class="sfill c3" style="width:100%"></div></div><p class="sv">350×</p></div>
+<div class="srow reveal" style="--i:3"><div class="sl"><p class="sn">Forward simulation</p><p class="ss">22.5 s → 0.108 s</p></div><div class="strack"><div class="sfill c4" style="width:60%"></div></div><p class="sv">210×</p></div>
+<div class="srow reveal" style="--i:4"><div class="sl"><p class="sn">Gradient</p><p class="ss">4.80 s → 0.076 s</p></div><div class="strack"><div class="sfill c5" style="width:18%"></div></div><p class="sv">63×</p></div>
+<div class="srow reveal" style="--i:5"><div class="sl"><p class="sn">Build the setup</p><p class="ss">1.38 s → 0.083 s</p></div><div class="strack"><div class="sfill c2" style="width:4.9%"></div></div><p class="sv">17×</p></div>
+<div class="srow muted reveal" style="--i:6"><div class="sl"><p class="sn">Imports (import jax)</p><p class="ss">0.48 s → 0.35 s</p></div><p class="snote">Not ours: benchmark.py imports JAX before our code loads.</p></div>
+</div>
+<div class="panel totalcard reveal" style="--i:7">
+<p class="ptitle">First-run total (scored)</p>
+<p class="huge">92×</p>
+<p class="sub">66.8 s → 0.727 s</p>
+<div class="spacer"></div>
+<p class="result">aLIGO test setup: 53×</p>
+<p class="note">Organisers’ smaller setup (29 gradients, 1e-6 tolerance): 31.3 s → 0.59 s, ln S error 3.8e-11.</p>
+</div>
+</div>
+<p class="footer">AMD EPYC 7763, one core, shared node, official benchmark.py. Original: commit 02ec741, first run. Ours: commit 65afeee, median of 5 runs. On a quiet EPYC 9654: 36.1 s → 0.55 s.</p>
+<aside>Stage by stage on the same machine: compiling 350 times faster, forward 210 times, gradient 63, setup 17. Only the JAX import is not ours to change. In total, 67 seconds became 0.73: 92 times faster. On the organisers' smaller aLIGO test setup it is 53 times faster, well inside its tighter tolerance.</aside>
+</section>
+
+<section id="remaining" class="footed" data-transition="fade">
+<p class="eyebrow reveal" style="--i:0">What is left</p>
+<h2 class="reveal" style="--i:1">Almost half of the remaining 0.73 s is importing JAX</h2>
+<p class="lede reveal" style="--i:2">benchmark.py imports JAX before our code loads. Of the part we control, the sparse solver is the largest piece, and it is already tuned.</p>
+<div class="spacer"></div>
+<div class="segbar reveal" style="--i:3" role="img" aria-label="First-run total 727 ms: imports 350 ms (48%), build 83 ms (11%), tracing and compiling 108 ms (15%), forward simulation 108 ms (15%), gradient 76 ms (10%), other 2 ms (0.3%)">
+<div class="seg c1" style="flex-grow:349.6"><p class="in">48 %</p></div>
+<div class="seg c2" style="flex-grow:83.2"><p class="in">11 %</p></div>
+<div class="seg c3" style="flex-grow:107.9"><p class="in">15 %</p></div>
+<div class="seg c4" style="flex-grow:107.9"><p class="in-dark">15 %</p></div>
+<div class="seg c5" style="flex-grow:76.2"><p class="in">10 %</p></div>
+<div class="seg c6" style="flex-grow:1.9"></div>
+</div>
+<div class="legend reveal" style="--i:4">
+<div class="key"><div class="swatch c1"></div><p class="name"><b>Imports</b> (import jax) 350 ms</p></div>
+<div class="key"><div class="swatch c2"></div><p class="name"><b>Build</b> the setup 83 ms</p></div>
+<div class="key"><div class="swatch c3"></div><p class="name"><b>Tracing + compiling</b> 108 ms</p></div>
+<div class="key"><div class="swatch c4"></div><p class="name"><b>Forward</b> simulation 108 ms</p></div>
+<div class="key"><div class="swatch c5"></div><p class="name"><b>Gradient</b> 76 ms</p></div>
+<div class="key"><div class="swatch c6"></div><p class="name"><b>Other</b> 2 ms (0.3 %)</p></div>
+</div>
+<p class="footer">Median of 5 official runs (the 0.727 s run), commit 65afeee, AMD EPYC 7763, one core, shared node.</p>
+<aside>What is left: almost half is importing JAX, which the benchmark does before our code loads. Of the part we control, the sparse solver is the largest piece, and it is already tuned.</aside>
+</section>
+
+<section id="trust" data-transition="fade">
+<p class="eyebrow reveal" style="--i:0">Why you can trust it</p>
+<h2 class="reveal" style="--i:1">Same physics, checked harder than the benchmark checks</h2>
+<div class="tiles">
+<div class="tile reveal" style="--i:2"><p class="num-light">4 of 4 criteria</p><p class="body">pass on every official run: |ln S − ln ref| ≤ 1e-5 (max 5.4e-6), all finite, gradient non-zero, finite-difference check.</p></div>
+<div class="tile reveal" style="--i:3"><p class="num-light">193 of 193 gradients</p><p class="body">match the original code to 3.4e-8 of the largest, not just the one the benchmark spot-checks.</p></div>
+<div class="tile reveal" style="--i:4"><p class="num-light">20 more setups</p><p class="body">Voyager, aLIGO, a cavity, random setups, 400 frequencies, edge cases: every criterion passes on each. They caught a bug that put total internal reflection 180× off.</p></div>
+<div class="tile reveal" style="--i:5"><p class="num-light">No shortcuts</p><p class="body">benchmark.py, inputs and requirements unchanged; nothing cached; float64 throughout; repeated runs bitwise identical.</p></div>
+</div>
+<aside>Speed means nothing if the physics changes. Every run passes all four criteria. All 193 gradients match the original, not just the spot-checked one. Twenty other setups pass too, and that testing caught a real branch-cut bug.</aside>
+</section>
+
+<section id="close" class="hero">
+<p class="eyebrow reveal" style="--i:0">What we learned</p>
+<h2 class="reveal" style="--i:1">Three habits that made it work</h2>
+<div class="lessons">
+<div class="lesson reveal" style="--i:2"><p class="idx">1</p><p class="text"><b>Profile before optimising.</b> After the solver was fixed, compiling was 90 % of the time, not the linear algebra.</p></div>
+<div class="lesson reveal" style="--i:3"><p class="idx">2</p><p class="text"><b>Exploit the structure.</b> A fixed sparsity pattern means: sparse, factor once, differentiate on the non-zeros.</p></div>
+<div class="lesson reveal" style="--i:4"><p class="idx">3</p><p class="text"><b>Keep one source of truth, and check every gradient.</b> The same physics code runs on NumPy and dual numbers; all 193 gradients are tested, not one.</p></div>
+</div>
+<div class="spacer"></div>
+<h3 class="reveal" style="--i:5">Thank you</h3>
+<p class="label reveal" style="--i:5">github.com/SudeepJoshi21/START-Hack-2026-Feyer-MOSTET</p>
+<aside>Three lessons: profile before optimising, exploit the structure, and keep one source of truth while checking every gradient. Thank you. The code and every measurement are in our repository.</aside>
+</section>
+
+</div>
+<div id="notes"></div>
+<div id="pager"></div>
+<script>
+(function () {
+  var slides = Array.prototype.slice.call(document.querySelectorAll('#stage > section'));
+  var stage = document.getElementById('stage'), notes = document.getElementById('notes'), pager = document.getElementById('pager');
+  var current = 0;
+  function fit() {
+    var s = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+    stage.style.transform = 'translate(' + (window.innerWidth - 1920 * s) / 2 + 'px,' + (window.innerHeight - 1080 * s) / 2 + 'px) scale(' + s + ')';
+  }
+  function show(i) {
+    current = Math.max(0, Math.min(slides.length - 1, i));
+    slides.forEach(function (el, k) { el.classList.toggle('active', k === current); });
+    var aside = slides[current].querySelector('aside');
+    notes.textContent = aside ? aside.textContent : '';
+    pager.textContent = (current + 1) + ' / ' + slides.length;
+    if (location.hash !== '#' + (current + 1)) history.replaceState(null, '', '#' + (current + 1));
+  }
+  document.addEventListener('keydown', function (e) {
+    var k = e.key;
+    if (k === 'ArrowRight' || k === 'ArrowDown' || k === 'PageDown' || k === ' ') { show(current + 1); e.preventDefault(); }
+    else if (k === 'ArrowLeft' || k === 'ArrowUp' || k === 'PageUp') { show(current - 1); e.preventDefault(); }
+    else if (k === 'Home') show(0);
+    else if (k === 'End') show(slides.length - 1);
+    else if (k === 'n' || k === 'N') document.body.classList.toggle('show-notes');
+    else if (k === 'f' || k === 'F') { if (!document.fullscreenElement) document.documentElement.requestFullscreen && document.documentElement.requestFullscreen(); else document.exitFullscreen(); }
+  });
+  document.addEventListener('click', function (e) { if (!e.target.closest('#notes')) show(current + (e.clientX < window.innerWidth / 3 ? -1 : 1)); });
+  window.addEventListener('resize', fit);
+  fit();
+  show((parseInt(location.hash.slice(1), 10) || 1) - 1);
+})();
+</script>
+</body>
+</html>
