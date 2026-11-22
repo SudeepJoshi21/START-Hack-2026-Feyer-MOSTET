@@ -536,6 +536,20 @@ def _expand_pullback(tiled_bar, source_rows, indices, count):
     return values_bar, tiled_bar.reshape(count, source_rows, -1).sum(axis=0)
 
 
+def _scatter_add(target, index, values):
+    """
+    target[..., index] += values along the last axis (duplicates in `index` accumulate), for a zero-initialised
+    complex target. Same sums, in the same order per entry, as np.add.at, but one vectorised bincount per part.
+    """
+    lead = int(np.prod(target.shape[:-1]))
+    width = target.shape[-1]
+    values = np.broadcast_to(values, target.shape[:-1] + (index.shape[0],)).reshape(lead, index.shape[0])
+    flat = (np.arange(lead)[:, None] * width + index[None, :]).ravel()
+    size = lead * width
+    total = np.bincount(flat, values.real.ravel(), minlength=size) + 1j * np.bincount(flat, values.imag.ravel(), minlength=size)
+    target += total.reshape(target.shape)
+
+
 def _to_carrier_rows(x, cv):
     """Sum a per-signal-row array over the rows that share one carrier row (broadcast cv == 1)."""
     return x.sum(axis=0, keepdims=True) if cv == 1 and x.shape[0] != 1 else x
@@ -638,9 +652,9 @@ def _backward(plan, optimized, parameters, carrier_values, signal_values, carrie
     q, q_rows, q_cols = s["q"], s["q_rows"], s["q_cols"]
     qb = np.broadcast_to(q, (r, q.shape[1]))
     qw = np.zeros_like(w)
-    np.add.at(qw, (slice(None), slice(None), q_rows), qb[:, None, :] * w[:, :, q_cols])
+    _scatter_add(qw, q_rows, qb[:, None, :] * w[:, :, q_cols])
     qtw = np.zeros_like(w)
-    np.add.at(qtw, (slice(None), slice(None), q_cols), qb[:, None, :] * np.conj(w[:, :, q_rows]))
+    _scatter_add(qtw, q_cols, qb[:, None, :] * np.conj(w[:, :, q_rows]))
     w_bar = total_b[:, :, None] * (np.conj(qw) + qtw)
     q_bar = np.einsum("rd,rdk,rdk->rk", total_b, np.conj(w[:, :, q_rows]), w[:, :, q_cols])
     if npn["once"]:
@@ -663,9 +677,9 @@ def _backward(plan, optimized, parameters, carrier_values, signal_values, carrie
     scale_bar = pre_bar * s["source"]
     carrier_bar = np.zeros((cv, cn), dtype=np.complex128)
     has_scale, has_source = sp["scale"] >= 0, sp["source"] >= 0
-    np.add.at(carrier_bar, (slice(None), sp["scale"][has_scale]), -_to_carrier_rows(scale_bar[:, has_scale], cv))
+    _scatter_add(carrier_bar, sp["scale"][has_scale].astype(np.int64), -_to_carrier_rows(scale_bar[:, has_scale], cv))
     ys_bar = np.zeros((r, sum(gr.shape[0] for gr in sp["groups"]) * 4), dtype=np.complex128)
-    np.add.at(ys_bar, (slice(None), sp["source"][has_source]), source_bar[:, has_source])
+    _scatter_add(ys_bar, sp["source"][has_source].astype(np.int64), source_bar[:, has_source])
 
     # detector selections backwards
     c_bar = _to_carrier_rows(c_bar, cv).transpose(1, 0, 2)          # (R or 1, D, N) -> (D, CV, N)
@@ -685,7 +699,7 @@ def _backward(plan, optimized, parameters, carrier_values, signal_values, carrie
     lam = np.linalg.solve(np.swapaxes(m[:, :, :-1], 1, 2), carrier_bar[..., None])[..., 0]
     m_bar = np.concatenate([-lam[:, :, None] * carrier[:, None, :], lam[:, :, None]], axis=2)   # (CV, CN, CN+1)
     yc_bar = np.zeros((cv, sum(gr.shape[0] for gr in cp["groups"]) * 4), dtype=np.complex128)
-    np.add.at(yc_bar, (slice(None), cp["outputs"]), m_bar[:, cp["matrix_rows"], cp["matrix_cols"]])
+    _scatter_add(yc_bar, cp["outputs"].astype(np.int64), m_bar[:, cp["matrix_rows"], cp["matrix_cols"]])
 
     # component Jacobians -> parameter rows
     ps_bar = np.zeros(ps.shape, dtype=np.complex128)
