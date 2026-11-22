@@ -1,27 +1,18 @@
-# Faster Physics: Differometor in ~2 seconds on a laptop
+# Faster Physics: the benchmark that did not run now takes 2.1 s
 
 **START Hack Munich 2026 · Feyer challenge · team repo `SudeepJoshi21/START-Hack-2026-Feyer-MOSTET`, branch `main`**
 
 > Every timing below was measured on **one machine**: an AMD Ryzen AI 7 350 laptop with 16 GB RAM, running WSL2 with 7 GB of
 > it available, pinned to one core
 > with the unchanged `benchmark.py --cpus 1`.
-> - **aLIGO benchmark** (organisers' `benchmark_aligo.py`): **71.9 s → 1.3 s, ~55× faster** on the same machine.
-> - **Main benchmark** (101 frequencies, 193 gradients, float64): **2.1 s** median. The original code **cannot run in the
+> - **Main benchmark** (`benchmark.py`, the `start_here.py` setup; 101 frequencies, 193 gradients, float64): the original
+>   code **does not run** here; ours takes **2.1 s** median. The original code **cannot run in the
 >   7 GB available to WSL2** (it needs ~14 GB of memory). For reference, the organisers' published baseline on their Xeon is 44.2 s.
+> - **aLIGO benchmark** (organisers' `benchmark_aligo.py`): **71.9 s → 1.3 s, ~55× faster** on the same machine.
 >
 > All judging criteria pass, and the physics results are unchanged.
 
 ## The result (laptop, 1 core)
-
-**Organisers' aLIGO benchmark** (101 frequencies, 29 gradients):
-
-| | Original code | Our `main` |
-|---|---:|---:|
-| **First-run total (scored)** | 71.9 s | **1.29 / 1.33 s** |
-| Compile (all programs) | 65.2 s | 0.27 s |
-| Forward + gradient (first run) | 2.9 s | 0.12 s |
-| Setup (imports + build) | 3.8 s | 0.9 s |
-| Max \|Δ ln S\| vs reference (aLIGO limit 1e-6) | 1.2e-10 | 3.8e-11 |
 
 **Main benchmark** (`benchmark.py`, 101 frequencies, 193 gradients):
 
@@ -32,6 +23,16 @@
 | Forward + gradient (first run) | — | 0.53 s | 0.72 s |
 | Setup (imports + build) | — | 2.3 s | 1.0 s |
 | Max \|Δ ln S\| vs reference (limit 1e-5) | 5.374e-6 (organisers) | 5.374e-6 | 5.374e-6 |
+
+**Organisers' aLIGO benchmark** (101 frequencies, 29 gradients):
+
+| | Original code | Our `main` |
+|---|---:|---:|
+| **First-run total (scored)** | 71.9 s | **1.29 / 1.33 s** |
+| Compile (all programs) | 65.2 s | 0.27 s |
+| Forward + gradient (first run) | 2.9 s | 0.12 s |
+| Setup (imports + build) | 3.8 s | 0.9 s |
+| Max \|Δ ln S\| vs reference (aLIGO limit 1e-6) | 1.2e-10 | 3.8e-11 |
 
 Reports and plots: `benchmarks/laptop/` (index in `benchmarks/laptop/README.md`).
 

@@ -89,42 +89,51 @@
   <!-- 1. Title -->
   <section class="slide">
     <div class="kicker">START Hack Munich 2026 · Feyer challenge</div>
-    <h1>Faster Physics:<br>Differometor in ~2 seconds, on a laptop</h1>
-    <p class="muted" style="font-size:22px;max-width:860px">A full evaluation with all frequencies and gradients in float64, the same physics and every judging
-      criterion passing. Every timing is from <b style="color:var(--ink)">one machine</b>: an AMD Ryzen AI 7 350 with 16 GB RAM,
-      running WSL2 with 7 GB of it available, pinned to one core.</p>
+    <h1>Faster Physics:<br>the benchmark that did not run now takes 2.1 s</h1>
+    <p class="muted" style="font-size:22px;max-width:880px">The full <code>benchmark.py</code> (101 frequencies, 193 gradients, float64) on one machine:
+      an AMD Ryzen AI 7 350 with 16 GB RAM, running WSL2 with 7 GB of it available, pinned to one core. Same physics, every judging
+      criterion passing.</p>
     <div class="row" style="margin-top:auto;align-items:flex-end">
-      <div><div class="big">~55×</div><div class="muted">aLIGO benchmark: 71.9 s → 1.3 s (same laptop)</div></div>
-      <div><div class="big" style="color:var(--good)">2.1 s</div><div class="muted">main benchmark (median of 9). The original does not even fit in the 7 GB WSL2 gets</div></div>
+      <div><div class="big" style="color:var(--muted);font-size:64px">out of memory</div><div class="muted">original code: needs ~14 GB, does not complete</div></div>
+      <div><div class="big" style="color:var(--good)">2.1 s</div><div class="muted">our code: median of 9 runs, all PASS</div></div>
     </div>
     <div class="source">Machine: AMD Ryzen AI 7 350, 16 GB RAM (7 GB available to WSL2), <code>--cpus 1</code> · reports in <code>benchmarks/laptop/</code> · repo <code>SudeepJoshi21/START-Hack-2026-Feyer-MOSTET</code>, branch <code>main</code></div>
   </section>
 
 
-  <!-- 3. Where the time went -->
+  <!-- 3. Before -> after -->
   <section class="slide">
-    <div class="kicker">Before → after, same laptop</div>
-    <h2>Where the time goes</h2>
-    <p class="muted" style="margin:0 0 6px">aLIGO benchmark, original code: <b style="color:var(--ink)">71.9 s</b></p>
+    <div class="kicker">Main benchmark (<code>benchmark.py</code>, the <code>start_here.py</code> setup), same machine</div>
+    <h2>Before → after</h2>
+    <div class="row">
+      <div class="col card">
+        <h3>Before: original code</h3>
+        <div class="big" style="color:var(--muted);font-size:52px;margin:6px 0 10px">does not run</div>
+        <ul>
+          <li>Needs <b>~14 GB</b> of memory (organisers' README); WSL2 here has <b>7 GB</b></li>
+          <li>Running the original at 101 frequencies crashed WSL (out of memory)</li>
+        </ul>
+      </div>
+      <div class="col card">
+        <h3>After: our code</h3>
+        <div class="big" style="color:var(--good);font-size:72px;margin:6px 0 10px">2.09 s</div>
+        <ul>
+          <li>Median of 9 official runs (1.76–2.96 s), every run <b>PASS</b></li>
+          <li>Every run stayed under our 3 GB memory guard</li>
+        </ul>
+      </div>
+    </div>
+    <p class="muted" style="margin:24px 0 6px">Where our 2.09 s goes</p>
     <div class="stack">
-      <div class="s-setup" style="width:5.3%"></div>
-      <div class="s-compile" style="width:90.7%">compile 65.2 s</div>
-      <div class="s-fwd" style="width:2%"></div>
-      <div class="s-grad" style="width:2%"></div>
+      <div class="s-setup" style="width:50%">imports + setup 1.04 s</div>
+      <div class="s-compile" style="width:15.3%">compile 0.32</div>
+      <div class="s-fwd" style="width:21.1%">forward 0.44</div>
+      <div class="s-grad" style="width:13.6%">grad 0.28</div>
     </div>
-    <p class="muted" style="margin:26px 0 6px">aLIGO benchmark, our <code>main</code>: <b style="color:var(--good)">1.29 s</b>, drawn to the same scale</p>
-    <div class="stack" style="width:1.8%;min-width:44px"><div class="s-setup" style="width:69%"></div><div class="s-compile" style="width:21%"></div><div class="s-fwd" style="width:5%"></div><div class="s-grad" style="width:5%"></div></div>
-    <div class="legend">
-      <span style="--c:#78716c">setup (imports + build)</span><span style="--c:var(--accent)">compile</span>
-      <span style="--c:#2563eb">forward run</span><span style="--c:#7c3aed">gradient (+ sensitivity)</span>
-    </div>
-    <table style="margin-top:22px">
-      <tr><th></th><th class="num">setup</th><th class="num">compile</th><th class="num">forward</th><th class="num">gradient</th><th class="num">total</th></tr>
-      <tr><td>aLIGO, original</td><td class="num">3.81</td><td class="num">65.23</td><td class="num">1.45</td><td class="num">1.42</td><td class="num">71.94 s</td></tr>
-      <tr><td>aLIGO, ours</td><td class="num">0.89</td><td class="num win">0.27</td><td class="num win">0.07</td><td class="num win">0.05</td><td class="num win">1.29 s</td></tr>
-      <tr><td>Main benchmark, ours (median run)</td><td class="num">1.04</td><td class="num win">0.32</td><td class="num win">0.44</td><td class="num win">0.28</td><td class="num win">2.09 s</td></tr>
-    </table>
-    <div class="source">benchmarks/laptop/aligo-original.json · aligo-main-run1.json · grid-main-run2.json (median of 9). The original main benchmark needs ~14 GB and does not run on this 7 GB laptop.</div>
+    <p class="muted" style="margin-top:16px">On the same machine, our own earlier pure-JAX version took <b style="color:var(--ink)">28.8 s</b> (26.0 s of it compiling).
+      For reference only: the organisers' 32 GB Xeon ran the original in 44.2 s.</p>
+    <div class="source">benchmarks/laptop/grid-main-run1..9.json (median: run 2) · grid-purejax-f5ea168.json · benchmarks/cpu-baseline.json (organisers).
+      The lighter start_here.py walkthrough with the original code finished once here in 254 s, swapping heavily.</div>
   </section>
 
   <!-- 4. Why slow -->
