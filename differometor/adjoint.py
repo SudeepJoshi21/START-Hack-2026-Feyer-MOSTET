@@ -153,12 +153,14 @@ def _csc_structure(rows, cols, n):
     return order, rows[order], np.cumsum(indptr)
 
 
-SUPERLU_OPTIONS = dict(ColPerm="COLAMD", PanelSize=4, Relax=4)
+SUPERLU_OPTIONS = dict(ColPerm="COLAMD", PanelSize=4, Relax=1)
 """
 COLAMD ordering as `splu`'s default, with smaller supernode panel and relaxation sizes than SuperLU's defaults, which
 suit these small, very sparse systems: factorisation of the 101 benchmark
 systems 90.8 -> 76.2 ms with identical accuracy (refined W vs dense LU 1.4e-8 uifo, 1.6e-13 Voyager).
-Pivoting is unchanged (a pivot threshold of 0.1 was 9 ms faster but was not adopted).
+Pivoting is unchanged (a pivot threshold of 0.1 was 9 ms faster but was not adopted). the-prime-model-nada: Relax=1 (no
+relaxed supernodes): factorisation + 9 solve passes 151 -> 120 ms in an interleaved in-process sweep (PanelSize 1-8
+barely matters at Relax=1); round-off-level differences only.
 """
 
 REFINEMENT_STEPS = 1
