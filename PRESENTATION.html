@@ -52,18 +52,21 @@
   .source { margin-top: auto; padding-top: 14px; font-size: 13px; color: var(--muted); }
   /* bar charts */
   .bars { display: flex; flex-direction: column; gap: 14px; margin-top: 8px; }
-  .bar { display: grid; grid-template-columns: 210px 1fr 90px; align-items: center; gap: 14px; }
+  .bar { display: grid; grid-template-columns: 210px 1fr 130px; align-items: center; gap: 14px; }
   .bar .track { height: 30px; background: var(--bg); border-radius: 8px; overflow: hidden; border: 1px solid var(--line); }
   .bar .fill { height: 100%; background: var(--bar-old); border-radius: 7px 0 0 7px; }
   .bar .fill.hot { background: var(--accent); }
   .bar .fill.good { background: var(--good); }
-  .bar .val { font-variant-numeric: tabular-nums; font-weight: 700; text-align: right; }
+  .bar .val { font-variant-numeric: tabular-nums; font-weight: 700; text-align: right; white-space: nowrap; }
   .stack { display: flex; height: 44px; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
   .stack div { height: 100%; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 14px; font-weight: 700; white-space: nowrap; overflow: hidden; }
   .s-setup { background: #78716c; } .s-compile { background: var(--accent); } .s-fwd { background: #2563eb; } .s-grad { background: #7c3aed; }
   .legend { display: flex; gap: 18px; font-size: 14px; color: var(--muted); margin-top: 10px; flex-wrap: wrap; }
   .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; background: var(--c); }
   .num-idea { font-size: 44px; font-weight: 800; color: var(--accent); line-height: 1; margin-bottom: 8px; }
+  body.export .deck { padding: 0; }
+  body.export .slide { width: 100vw; height: 100vh; max-height: none; aspect-ratio: auto; border: 0; border-radius: 0; padding: 52px 64px; }
+  body.export nav { display: none; }
   nav { position: fixed; bottom: 14px; left: 0; right: 0; display: flex; justify-content: center; align-items: center; gap: 14px;
     font-size: 14px; color: var(--muted); user-select: none; }
   nav button { background: var(--card); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 6px 14px; cursor: pointer; font: inherit; }
@@ -89,12 +92,12 @@
   <!-- 1. Title -->
   <section class="slide">
     <div class="kicker">START Hack Munich 2026 · Feyer challenge</div>
-    <h1>Faster Physics:<br>the benchmark that did not run now takes 2.09 s</h1>
+    <h1>Faster Physics:<br>the benchmark that did not run<br>now takes 2.09&nbsp;s</h1>
     <p class="muted" style="font-size:22px;max-width:880px">The full <code>benchmark.py</code> (101 frequencies, 193 gradients, float64) on one machine:
       an AMD Ryzen AI 7 350 with 16 GB RAM, running WSL2 with 7 GB of it available, pinned to one core. Same physics, every judging
       criterion passing.</p>
-    <div class="row" style="margin-top:auto;align-items:flex-end">
-      <div><div class="big" style="color:var(--muted);font-size:64px">out of memory</div><div class="muted">original code: needs ~14 GB, does not complete</div></div>
+    <div class="row" style="margin-top:auto;align-items:flex-end;gap:80px">
+      <div><div class="big" style="color:var(--muted);font-size:56px">out of memory</div><div class="muted">original code: needs ~14 GB, does not complete</div></div>
       <div><div class="big" style="color:var(--good)">2.09 s</div><div class="muted">our code: median of 9 runs, all PASS</div></div>
     </div>
     <div class="source">Machine: AMD Ryzen AI 7 350, 16 GB RAM (7 GB available to WSL2), <code>--cpus 1</code> · reports in <code>benchmarks/laptop/</code> · repo <code>SudeepJoshi21/START-Hack-2026-Feyer-MOSTET</code>, branch <code>main</code></div>
@@ -102,8 +105,8 @@
 
 
   <!-- 3. Before -> after -->
-  <section class="slide">
-    <div class="kicker">Main benchmark (<code>benchmark.py</code>), same machine</div>
+  <section class="slide" style="justify-content:center">
+    <div class="kicker">Main benchmark (benchmark.py), same machine</div>
     <h2>Before → after</h2>
     <div class="row">
       <div class="col card">
@@ -148,7 +151,8 @@
     <div class="row">
       <div class="col">
         <ul>
-          <li>The noise needs <code>w = A⁻ᴴc</code> and then <code>A⁻¹Qw</code>. Since <code>cᴴA⁻¹ = wᴴ</code>:
+          <li>The noise needs <span style="white-space:nowrap"><b>w = A⁻ᴴc</b></span> and then <span style="white-space:nowrap"><b>A⁻¹Qw</b></span>.
+            Since <span style="white-space:nowrap"><b>cᴴA⁻¹ = wᴴ</b></span>:
             <div class="card" style="margin:10px 0;font-size:22px;text-align:center"><b>noise ∝ Re(wᴴ Q w)</b></div>
             so the third solve is redundant.</li>
           <li>The other two share <b>one sparse LU</b> (SciPy SuperLU) on the fixed 2,597-entry pattern.</li>
@@ -175,9 +179,9 @@
     <div class="row">
       <div class="col">
         <p>For <code>A x = b</code> and the incoming gradient <code>x̄</code>:</p>
-        <pre>λ    = A⁻ᵀ x̄                 ← one extra solve, same factorisation
+        <pre>λ    = A⁻ᵀ x̄                 ← one extra solve, same LU
 b̄    = λ
-Ā[k] = −λ[row_k] · x[col_k]  ← only on the 2,597 non-zeros</pre>
+Ā[k] = −λ[row_k] · x[col_k]  ← non-zeros only</pre>
         <p class="muted" style="margin-top:14px">Checked against JAX's own autodiff to 1e-16. The conjugate transpose would be 58 % wrong:
           JAX uses the plain transpose for holomorphic maps.</p>
       </div>
@@ -317,7 +321,7 @@ b̄    = λ
     <pre>python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt && pip install -e .
 python benchmark.py --cpus 1 --repeats 3 --output run.json --save-arrays run.npz   # PASS
-python scripts/check_correctness.py run.json run.npz                                # ALL CRITERIA PASS</pre>
+python scripts/check_correctness.py run.json run.npz                               # ALL CRITERIA PASS</pre>
     <div class="row" style="margin-top:26px">
       <div class="col card"><h3>Read more</h3><p><code>PITCH.md</code> · <code>docs/CHANGES.md</code> (every change) · <code>docs/FINDINGS.md</code> (every measurement)</p></div>
       <div class="col card"><h3>Team</h3><p>Sudeep Joshi, Ayush Sharma, Zeyu Chen</p></div>
@@ -363,6 +367,11 @@ python scripts/check_correctness.py run.json run.npz                            
     if (Math.abs(dx) > 50) show(i + (dx < 0 ? 1 : -1));
     x0 = null;
   });
+  try {
+    const q = new URLSearchParams(location.search);
+    if (q.has("export")) document.body.classList.add("export");
+    if (q.get("theme")) document.documentElement.dataset.theme = q.get("theme");
+  } catch (e) {}
   show(i);
 </script>
 </body>
