@@ -1,91 +1,115 @@
-# Faster Physics: Differometor in ~1 second
+# Faster Physics: Differometor in ~2 seconds on a laptop
 
 **START Hack Munich 2026 · Feyer challenge · team repo `SudeepJoshi21/START-Hack-2026-Feyer-MOSTET`, branch `main`**
 
-> One full evaluation (101 frequencies, 193 gradients, float64) now takes **0.83 s** on one CPU core,
-> down from **60–72 s** for the original code on the same machine: **~75–85× faster**, with all judging criteria passing
-> and the physics results unchanged.
+> Every timing below was measured on **one machine**, a laptop (AMD Ryzen AI 7 350, WSL2, 7 GB RAM), pinned to one core
+> with the unchanged `benchmark.py --cpus 1`.
+> - **aLIGO benchmark** (organisers' `benchmark_aligo.py`): **71.9 s → 1.3 s, ~55× faster** on the same machine.
+> - **Main benchmark** (101 frequencies, 193 gradients, float64): **2.1 s** median. The original code **cannot run on this
+>   laptop at all** (it needs ~14 GB of memory). For reference, the organisers' published baseline on their Xeon is 44.2 s.
+>
+> All judging criteria pass, and the physics results are unchanged.
 
-## The result
+## The result (laptop, 1 core)
 
-| `benchmark.py --cpus 1` (unchanged scorer) | Original code | Our `main` |
+**Organisers' aLIGO benchmark** (101 frequencies, 29 gradients):
+
+| | Original code | Our `main` |
 |---|---:|---:|
-| **First-run total (scored)**, AMD EPYC 7763, same machine | 60.4–72.5 s (different days) | **0.83 s** median of 5 (0.82–0.84 s) |
-| Organisers' baseline, Intel Xeon 8468 | 44.2 s | — |
-| Compile (all programs) | 38.5 s (EPYC) / 22.9 s (Xeon) | **0.11 s** |
-| Forward + gradient (first run) | 25.7 s (EPYC) / 17.7 s (Xeon) | **0.27 s** |
-| Setup (build the optical setup and inputs) | 7.7 s (EPYC) | **0.095 s** |
-| Peak memory | ~14.4 GB | < 1 GB |
-| Max \|Δ ln S\| vs reference (limit 1e-5) | 5.374e-6 | 5.374e-6 |
+| **First-run total (scored)** | 71.9 s | **1.29 / 1.33 s** |
+| Compile (all programs) | 65.2 s | 0.27 s |
+| Forward + gradient (first run) | 2.9 s | 0.12 s |
+| Setup (imports + build) | 3.8 s | 0.9 s |
+| Max \|Δ ln S\| vs reference (aLIGO limit 1e-6) | 1.2e-10 | 3.8e-11 |
 
-Sources: `benchmarks/cpu-baseline.json` (organisers), `benchmarks/final/` (ours, commit `54ff4ae`, plus the original code
-on the same EPYC), index in `benchmarks/README.md`. The EPYC node is shared: totals vary by about ±0.1 s, so we report
-medians (the step from 0.92 s to 0.83 s is the faster setup, −16 ms in an interleaved A/B, plus a quieter node).
-Without the XLA compile options (`DIFFEROMETOR_XLA_OPT0=0`) the total is 1.2–1.6 s depending on node load. On our laptop
-(Ryzen AI 7 350, 1 core) the current `main` runs in **1.76–1.82 s** once warm (2.0–2.6 s for the first run after a pause);
-an interleaved A/B with the previous version shows no difference on that machine.
+**Main benchmark** (`benchmark.py`, 101 frequencies, 193 gradients):
 
-## It transfers to other optical setups
+| | Original code | Our pure-JAX version | Our `main` |
+|---|---:|---:|---:|
+| **First-run total (scored)** | does not fit (needs ~14 GB) | 28.8 s | **2.09 s** median of 9 (1.76–2.96 s) |
+| Compile (all programs) | — | 26.0 s | 0.32 s |
+| Forward + gradient (first run) | — | 0.53 s | 0.72 s |
+| Setup (imports + build) | — | 2.3 s | 1.0 s |
+| Max \|Δ ln S\| vs reference (limit 1e-5) | 5.374e-6 (organisers) | 5.374e-6 | 5.374e-6 |
 
-The final evaluation uses an **unknown optical topology similar to the benchmark one**, so the simulator must take any setup
-definition, not just this fixture. Nothing in our code is specific to the benchmark: the sparsity pattern, the component
-groups and the solver are all derived from the setup at build time.
+Reports and plots: `benchmarks/laptop/` (index in `benchmarks/laptop/README.md`).
 
-| Organisers' aLIGO benchmark (`benchmark_aligo.py`, 101 freqs, 29 gradients) | Original code | Our `main` |
-|---|---:|---:|
-| First-run total | 25.3 s (organisers' Xeon, `benchmarks/aligo-cpu-baseline.json`) | **1.29 / 1.33 s** (laptop, 1 core) |
-| Max \|Δ ln S\| vs reference (aLIGO limit **1e-6**) | — | **3.8e-11** |
-| Fast host path used | — | yes, no fallback |
+**Reference only, different machine:** the organisers' published baselines on an Intel Xeon 8468 are **44.2 s** (main) and
+**25.3 s** (aLIGO): `benchmarks/cpu-baseline.json`, `benchmarks/aligo-cpu-baseline.json`.
 
-Random 3×3 UIFOs (the same family as the benchmark, three modulation modes), a second trained UIFO, Voyager and aLIGO in
-several modes all run on the fast path and pass every judging criterion (`scripts/scenarios.py`, cluster). A setup outside the
-fast path's assumptions still runs, through the JAX path: slower, with the same results.
+Notes:
+- **What "our pure-JAX version" is:** WS1–WS4 merged (commit `f5ea168`). It is the same physics inside JAX, before we moved
+  it to the host.
+- **How the laptop numbers vary:** the times swing by about ±20 % from run to run (Python imports and the first call; see
+  `docs/FINDINGS.md` §1.10), so we report the median of 9 runs.
+- **Without the XLA compile options** (`DIFFEROMETOR_XLA_OPT0=0`): 2.6 / 3.1 s.
+- **The aLIGO original** was measured once on this laptop.
 
 ## What made it slow
 
 1. **Three dense 751×751 solves per frequency**, for a matrix that is **99.5 % zeros**.
-2. **A ~9 GB autodiff "tape"**, because JAX stored every intermediate for the gradient.
-3. **About half the time was compiling**: XLA compiled all 19 component formulas for every matrix entry, plus their derivatives.
+2. **A ~9 GB autodiff "tape"**, because JAX stored every intermediate for the gradient. That is why the original does not fit in
+   7 GB.
+3. **Compilation**: XLA compiled all 19 component formulas for every matrix entry, plus their derivatives. On aLIGO that
+   is 65 of the 72 seconds.
 
 ## What we did (in four ideas)
 
 1. **Less linear algebra.** We saw that the noise equals `Re(wᴴQw)` with `Aᴴw = c`, so one of the three solves is redundant.
-   The other two share **one sparse LU** (SciPy SuperLU) on the fixed 2,597-entry pattern, with iterative refinement for
-   accuracy (the signal solve in mixed precision, residuals in 80-bit `longdouble`): ~0.7 ms instead of ~36 ms per frequency.
+   The other two share **one sparse LU** (SciPy SuperLU) on the fixed sparsity pattern, with iterative refinement for
+   accuracy (the signal solve's residuals in 80-bit `longdouble`). On the laptop one dense 751×751 solve takes ~60 ms; the
+   sparse factorisation takes a few ms.
 2. **A hand-written gradient (adjoint method).** One transposed solve with the same factorisation gives the gradient,
    and the matrix gradient is formed only on the non-zeros. The 9 GB tape is gone.
 3. **No physics left for XLA to compile.** The whole simulation runs as NumPy/SciPy code behind a single `jax.custom_vjp`.
    The physics formulas in `components.py` are **reused unchanged** (re-bound to NumPy), and their derivatives come from
-   forward-mode dual numbers. XLA sees only two callbacks: compile time on the EPYC drops from 20.2 s (the JAX version, `benchmarks/epyc-main-default.json`)
-   to 0.11 s.
-4. **Startup and compile polish.** No needless imports or tiny compiles while building the setup; the setup stays in
-   NumPy and moves everything to the device in one transfer, skipping the dense base matrices the host path never reads
-   (setup 7.7 s → 0.095 s). Plus three XLA compile options
-   set in `differometor/__init__.py`. They don't change any number, are recorded in the benchmark report, and can be
-   switched off with `DIFFEROMETOR_XLA_OPT0=0`.
+   forward-mode dual numbers. XLA sees only two callbacks: on the laptop, compile drops from 26.0 s (pure-JAX version) to
+   0.3 s.
+4. **Startup and compile polish.** No needless imports or tiny compiles while building the setup; the setup stays in NumPy and
+   moves everything to the device in one transfer. Plus three XLA compile options set in `differometor/__init__.py`. They
+   don't change any number, are recorded in the benchmark report, and can be switched off with `DIFFEROMETOR_XLA_OPT0=0`.
 
 Everything is inside `differometor/`. `benchmark.py`, `benchmark_aligo.py`, the input files and `requirements.txt` are
-byte-identical to the organisers' latest version (upstream `83f8d2f`, merged into `main`). No precomputed results and no compilation cache; float64, all 101 frequencies, all 193 gradients.
+byte-identical to the organisers' latest version (upstream `83f8d2f`, merged into `main`). No precomputed results, no disk
+caches and no compilation cache; float64 throughout, all frequencies, all gradients.
+
+## It transfers to other optical setups
+
+The final evaluation uses **a slight variation of the supplied example**. Nothing in our code is specific to the benchmark:
+the sparsity pattern, the component groups and the solver are all derived from the setup definition at build time.
+
+Variations on the laptop (`scripts/scenarios.py time`, fresh process, 1 core, our code):
+
+| Setup | Size | Total | Fast path |
+|---|---|---:|---|
+| Benchmark design, all variables changed by ±10 % | 751 unknowns, 193 variables | 4.59 s (first run after a pause: imports alone 2.6 s) | yes |
+| Random 3×3 UIFO (different topology) | 767 unknowns, 251 variables | 1.82 s | yes |
+| Second trained UIFO | 769 unknowns, 192 variables | 1.80 s | yes |
+| Benchmark setup, wideband 10 Hz–10 kHz | 751 unknowns, 193 variables | 1.58 s | yes |
+| Glass beamsplitter, total internal reflection (edge case) | 751 unknowns, 193 variables | 1.70 s | yes |
+| Voyager | 161 unknowns, 48 variables | 1.13 s | yes |
+| aLIGO (organisers' test) | 29 variables | 1.29–1.33 s | yes |
+
+All of these have finite outputs and a non-zero gradient. A setup outside the fast path's assumptions still runs, through the
+JAX path: slower, with the same results.
 
 ## Correctness and robustness
 
+On the laptop:
 - **Judging criteria:** `scripts/check_correctness.py` → **ALL CRITERIA PASS** (full setup, positive sensitivities
   within 1e-5, everything finite, gradient non-zero, finite-difference check).
-- **All 193 gradients** agree with the original code to 3.6e-8 (relative to the largest; cosine similarity
-  1.000000000000), not just the one the benchmark spot-checks; carrier and powers are bit-identical.
-- **20 further inputs** (`scripts/scenarios.py check`): perturbed design variables (±1 %, ±10 %), 20 and 400 frequencies,
-  wideband sweeps, a second trained UIFO, random UIFOs in three modulation modes, Voyager and aLIGO in several modes, a
-  Fabry-Perot cavity, and the **edge-cases bundle** (glass on a beamsplitter with total internal reflection at 45°, 135°
-  and 225°, plus ordinary refraction). Every judging criterion passes on each, checked against the original code and a
-  high-accuracy reference; the 400-frequency original is computed in four chunks (it needs > 48 GB at once). Our code
-  runs each in 0.65–1.13 s (400 frequencies: 2.05 s), 13–71× faster than the original. Anything outside the fast
-  path's assumptions **falls back automatically** to the JAX path.
-- **Robustness tests** (`tests/test_robustness.py`, `tests/test_generalisation.py`): 1 to 101 frequencies, singular
-  points (reflectivity exactly 1.0), branch cuts, gradients against finite differences away from the benchmark point,
-  no state leaking between calls, results independent of what ran before.
-- **More accurate where it matters:** on Voyager, a badly conditioned setup, the refined sparse solves agree with dense
-  LU to 2.8e-13, where a plain sparse solve was off by 3.6e-3 (commit `df70796`).
-- **Deterministic:** repeated runs give bit-identical outputs; only the timing varies (imports and first call).
+- **All 193 gradients** agree with the original code to 2e-5 per entry (cosine similarity 1.000000000000), not just the one
+  the benchmark spot-checks (`scripts/bench.py check`, 10 frequencies).
+- **Robustness tests** (`tests/test_robustness.py`): design variables changed by ±1 % and ±10 %, 1/2/7 frequencies, a
+  mirror with reflectivity exactly 1.0, no state leaking between calls, results independent of what ran before. All PASS.
+- **Deterministic:** repeated runs give bit-identical outputs; only the timing varies.
+
+On the team's cluster node (accuracy only, too large for the laptop), `scripts/scenarios.py check` and
+`tests/test_generalisation.py`:
+- **20 further inputs pass every judging criterion**, including all the variations above.
+- **Checked against** the original code and a high-accuracy reference.
+- **Voyager:** a badly conditioned setup where refined sparse solves agree with dense LU to 2.8e-13 (a plain sparse solve was
+  off by 3.6e-3).
 
 ## What we learned
 
@@ -110,10 +134,13 @@ python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt && pip install -e .
 python benchmark.py --cpus 1 --repeats 3 --output run.json --save-arrays run.npz   # prints PASS
 python scripts/check_correctness.py run.json run.npz                                # ALL CRITERIA PASS
-python tests/test_robustness.py && python tests/test_generalisation.py              # ALL PASS
-python benchmark_aligo.py --cpus 1                                                  # organisers' smaller setup: PASS
-bash scripts/gate.sh     # cluster only (48 GB): 6 official runs vs every criterion, determinism, all tests, 20 inputs (~25 min)
+python benchmark_aligo.py --cpus 1                                                  # organisers' aLIGO setup: PASS
+python scripts/scenarios.py time --rounds 1 uifo-random3 uifo20-5000 voyager        # other setups, our code only
+python tests/test_robustness.py                                                     # ALL PASS
+bash scripts/gate.sh     # cluster only (48 GB): official runs vs every criterion, determinism, all tests, 20 inputs
 ```
+
+Always pass `--cpus 1`: without it the benchmark uses every core and the numbers are not comparable.
 
 Details: [`docs/CHANGES.md`](docs/CHANGES.md) (every change, simple), [`docs/FINDINGS.md`](docs/FINDINGS.md)
 (all measurements), [`OPTIMIZATION_PLAN.md`](OPTIMIZATION_PLAN.md) (how we split the work).
