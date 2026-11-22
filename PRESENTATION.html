@@ -209,7 +209,7 @@ b̄    = λ
         <h3>Compile time, main benchmark, laptop</h3>
         <div class="bars">
           <div class="bar"><span>our pure-JAX version</span><div class="track"><div class="fill hot" style="width:100%"></div></div><span class="val">26.0 s</span></div>
-          <div class="bar"><span>physics on the host</span><div class="track"><div class="fill good" style="width:1.2%"></div></div><span class="val">0.32 s</span></div>
+          <div class="bar"><span>physics in NumPy/SciPy</span><div class="track"><div class="fill good" style="width:1.2%"></div></div><span class="val">0.32 s</span></div>
         </div>
         <div class="source">benchmarks/laptop/grid-purejax-f5ea168.json · grid-main-run2.json</div>
       </div>
@@ -229,7 +229,7 @@ b̄    = λ
           <li>Recorded in the benchmark report; off with <code>DIFFEROMETOR_XLA_OPT0=0</code></li></ul></div>
       <div class="col card"><h3>Smaller wins</h3>
         <ul><li>Dual numbers only on the inputs a formula reads</li><li>Solver ordering reused across frequencies</li>
-          <li>Detector read-outs on the host</li></ul></div>
+          <li>Detector read-outs in NumPy too</li></ul></div>
     </div>
   </section>
 
@@ -240,7 +240,7 @@ b̄    = λ
     <div class="bars">
       <div class="bar"><span>Original code</span><div class="track"><div class="fill" style="width:100%;opacity:.35"></div></div><span class="val">needs ~14 GB</span></div>
       <div class="bar"><span>Our pure-JAX version<br><small class="muted">sparse LU · adjoint · assembly</small></span><div class="track"><div class="fill hot" style="width:100%"></div></div><span class="val">28.8 s</span></div>
-      <div class="bar"><span>Physics on the host<br><small class="muted">+ polish, XLA options, robustness fixes</small></span><div class="track"><div class="fill good" style="width:7.3%"></div></div><span class="val">2.09 s</span></div>
+      <div class="bar"><span>Physics in NumPy/SciPy<br><small class="muted">nothing to compile · + polish, XLA options, fixes</small></span><div class="track"><div class="fill good" style="width:7.3%"></div></div><span class="val">2.09 s</span></div>
     </div>
     <p class="muted" style="margin-top:22px">The original main benchmark needs ~14 GB and does not run in the 7 GB available to WSL2 on this machine. For reference only, the organisers
       published 44.2 s on their 32 GB Xeon (a different machine).</p>
@@ -273,7 +273,7 @@ b̄    = λ
           <tr><td>Voyager <small class="muted">(48 vars)</small></td><td class="num">1.13 s</td></tr>
         </table>
         <p class="muted" style="margin-top:10px">All on the fast path, finite outputs, non-zero gradient. Accuracy vs the original on 20 such inputs: all
-          criteria PASS (team's cluster node). Anything unsupported still runs on the JAX path.</p>
+          criteria PASS (team's cluster node). A setup the fast path cannot handle still runs automatically as JAX code: slower, same results.</p>
       </div>
     </div>
     <div class="source">benchmarks/laptop/aligo-original.json · aligo-main-run1..2.json · scripts/scenarios.py time (laptop, 1 core, one run each)</div>
@@ -290,7 +290,7 @@ b̄    = λ
       <tr><td>Design variables ±1 % / ±10 %; 1–101 frequencies</td><td>match the original code</td></tr>
       <tr><td>Wideband sweep, second trained UIFO, random UIFOs, Voyager, aLIGO, cavity</td><td>match the original code</td></tr>
       <tr><td>Repeated runs</td><td>bit-identical outputs</td></tr>
-      <tr><td>Anything outside the fast path's assumptions</td><td>automatic fallback to the JAX path</td></tr>
+      <tr><td>A setup the fast NumPy path cannot handle (e.g. a custom derived-parameter formula)</td><td>runs automatically as JAX code: slower, same results</td></tr>
     </table>
     <p class="muted" style="margin-top:18px">Our strict checks caught three bugs before submission: a solver accuracy issue on Voyager, a deadlock at 101 frequencies
       on one core, and a NaN leak at singular inputs.</p>

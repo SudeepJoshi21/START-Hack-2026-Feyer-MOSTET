@@ -40,7 +40,7 @@ Reports and plots: `benchmarks/laptop/` (index in `benchmarks/laptop/README.md`)
 
 Notes:
 - **What "our pure-JAX version" is:** WS1–WS4 merged (commit `f5ea168`). It is the same physics inside JAX, before we moved
-  it to the host.
+  it to NumPy/SciPy.
 - **How the laptop numbers vary:** the times swing by about ±20 % from run to run (Python imports and the first call; see
   `docs/FINDINGS.md` §1.10), so we report the median of 9 runs.
 - **Without the XLA compile options** (`DIFFEROMETOR_XLA_OPT0=0`): 2.6 / 3.1 s.
@@ -93,8 +93,14 @@ Variations on the laptop (`scripts/scenarios.py time`, fresh process, 1 core, ou
 | Voyager | 161 unknowns, 48 variables | 1.13 s | yes |
 | aLIGO (organisers' test) | 29 variables | 1.29–1.33 s | yes |
 
-All of these have finite outputs and a non-zero gradient. A setup outside the fast path's assumptions still runs, through the
-JAX path: slower, with the same results.
+All of these have finite outputs and a non-zero gradient.
+
+**What if a setup is not supported by the fast path?** It still runs, just slower. When the setup is built, Differometor checks
+whether the fast NumPy/SciPy path can handle it. If not, the simulation automatically runs as JAX code instead (the
+compiled version, like the original): same physics, same results, but with the compile time back. This happens, for example,
+when a derived parameter uses a custom formula (we support "same value" and "square root"), when two components write to the
+same matrix entry, or when two kinds of parameters are swept at once. None of these occurs in the benchmark, aLIGO, Voyager
+or the random UIFOs above.
 
 ## Correctness and robustness
 
