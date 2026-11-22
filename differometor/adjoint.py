@@ -179,8 +179,56 @@ Cost: one sparse product + one triangular solve per frequency.
 """
 
 EXTENDED_REFINEMENT_STEPS = 3
-"""Steps of mixed-precision refinement (residual in np.longdouble) for refine="extended" and for the frequencies the
-adaptive mode flags (3: with SuperLU Relax=1, 2 steps left Voyager frequency modulation at 1.1e-5, 3 steps 7.8e-6)."""
+"""
+Steps of mixed-precision refinement for refine="extended" and for the frequencies the adaptive mode flags: residual
+and accumulated solution in double-double (pairs of float64, ~32 significant digits), corrections from the float64
+factorisation.
+
+Until the-prime-model-nada the residual was computed in np.longdouble (80-bit on x86, plain float64 elsewhere). On
+Voyager in frequency-modulation mode (cond 5.7e11, read-out cancellation ~1e10) that left the iterates jittering by
+~5e-13 normwise from step to step, which the read-out turns into ~1e-5 in ln S: the 6-step high-accuracy reference
+itself moved 7.4e-6 between 6 and 7 steps, and the same code landed 8.3e-6 or 1.1e-5 from it depending on the
+platform's rounding. With double-double residuals the steps converge to the correctly rounded solution (3 steps from
+the float64-refined start), on every platform.
+"""
+
+
+# Double-double arithmetic (error-free transformations in float64; NumPy rounds every ufunc result to float64, so
+# they are exact as written).
+_SPLITTER = 134217729.0  # 2**27 + 1, Veltkamp/Dekker splitting
+
+
+def _two_sum(a, b):
+    """s, e with s = fl(a + b) and s + e = a + b exactly (Knuth)."""
+    s = a + b
+    v = s - a
+    return s, (a - (s - v)) + (b - v)
+
+
+def _two_prod(a, b):
+    """p, e with p = fl(a * b) and p + e = a * b exactly (Dekker; needs no fused multiply-add)."""
+    p = a * b
+    t = _SPLITTER * a
+    a_hi = t - (t - a)
+    a_lo = a - a_hi
+    t = _SPLITTER * b
+    b_hi = t - (t - b)
+    b_lo = b - b_hi
+    return p, ((a_hi * b_hi - p) + a_hi * b_lo + a_lo * b_hi) + a_lo * b_lo
+
+
+def _dd_add(hi, lo, d):
+    """(hi + lo) + d for complex double-double numbers and a float64 correction d, renormalised (hi = fl(hi + lo))."""
+    out_hi, out_lo = np.empty(hi.shape, dtype=np.complex128), np.empty(hi.shape, dtype=np.complex128)
+    s, e = _two_sum(hi.real, d.real)
+    e = e + lo.real
+    out_hi.real = s + e
+    out_lo.real = e - (out_hi.real - s)
+    s, e = _two_sum(hi.imag, d.imag)
+    e = e + lo.imag
+    out_hi.imag = s + e
+    out_lo.imag = e - (out_hi.imag - s)
+    return out_hi, out_lo
 
 
 _SUPERLU = None
@@ -413,13 +461,76 @@ class Factorisations:
         data = data if rows is None else data[rows]
         return np.add.reduceat(data[:, :, None] * x[:, sources, :], starts, axis=1)
 
+    def _dd_layout(self, trans):
+        """
+        op(A)'s entries row by row, padded to the longest row, for the double-double residual: (positions into the
+        columns of self.data, source columns), each (n, width). Padding points at an extra zero coefficient (index nnz).
+        """
+        key = ("dd", trans)
+        if key not in self._padded:
+            source, target = (self.columns, self.rows) if trans == "N" else (self.rows, self.columns)
+            order = np.argsort(target, kind="stable")
+            counts = np.bincount(target, minlength=self.n)
+            starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
+            row = target[order]
+            slot = np.arange(order.size) - starts[row]
+            positions = np.full((self.n, max(int(counts.max()), 1)), self.data.shape[1], dtype=np.int64)
+            sources = np.zeros(positions.shape, dtype=np.int64)
+            positions[row, slot] = order
+            sources[row, slot] = source[order]
+            self._padded[key] = (positions, sources)
+        return self._padded[key]
+
+    def _residual_dd(self, rhs, x_hi, x_lo, trans, rows=None):
+        """rhs - op(A_f) (x_hi + x_lo) for the frequencies `rows` (default all), accumulated in double-double and
+        rounded to float64 once; rhs, x_hi, x_lo (F', n, k)."""
+        if trans == "H":
+            return np.conj(self._residual_dd(np.conj(rhs), np.conj(x_hi), np.conj(x_lo), "T", rows))
+        positions, sources = self._dd_layout(trans)
+        data = self.data if rows is None else self.data[rows]
+        data = np.concatenate([data, np.zeros((data.shape[0], 1), dtype=np.complex128)], axis=1)
+        sum_re, low_re = np.zeros(x_hi.shape), np.zeros(x_hi.shape)
+        sum_im, low_im = np.zeros(x_hi.shape), np.zeros(x_hi.shape)
+        for m in range(positions.shape[1]):
+            a = data[:, positions[:, m]][:, :, None]
+            hi, lo = x_hi[:, sources[:, m], :], x_lo[:, sources[:, m], :]
+            p1, e1 = _two_prod(a.real, hi.real)
+            p2, e2 = _two_prod(a.imag, hi.imag)
+            p3, e3 = _two_prod(a.real, hi.imag)
+            p4, e4 = _two_prod(a.imag, hi.real)
+            t_re, c_re = _two_sum(p1, -p2)
+            t_im, c_im = _two_sum(p3, p4)
+            small = a * lo                       # x_lo ~ 1e-16 |x|: rounding of these products is below double-double
+            sum_re, c = _two_sum(sum_re, t_re)
+            low_re = low_re + (c + (c_re + (e1 - e2) + small.real))
+            sum_im, c = _two_sum(sum_im, t_im)
+            low_im = low_im + (c + (c_im + (e3 + e4) + small.imag))
+        out = np.empty(x_hi.shape, dtype=np.complex128)
+        r, c = _two_sum(rhs.real, -sum_re)
+        out.real = r + (c - low_re)
+        r, c = _two_sum(rhs.imag, -sum_im)
+        out.imag = r + (c - low_im)
+        return out
+
     def _extend(self, rhs, x, trans, rows=None):
-        """EXTENDED_REFINEMENT_STEPS mixed-precision refinement steps from x (permuted space, frequencies `rows`)."""
-        x_ext, rhs_ext = x.astype(np.clongdouble), rhs.astype(np.clongdouble)
+        """
+        EXTENDED_REFINEMENT_STEPS mixed-precision refinement steps from x (permuted space, frequencies `rows`): residual
+        and solution in double-double, corrections from the float64 factorisation.
+        """
+        data = self.data if rows is None else self.data[rows]
+        moderate = all(np.isfinite(v).all() and float(np.max(np.abs(v), initial=0.0)) < 1e250 for v in (x, rhs, data))
+        if not moderate:
+            # non-finite (singular frequency) or huge input, where splitting could overflow: the np.longdouble steps
+            x_ext, rhs_ext = x.astype(np.clongdouble), rhs.astype(np.clongdouble)
+            for _ in range(EXTENDED_REFINEMENT_STEPS):
+                residual = (rhs_ext - self._apply_extended(x_ext, trans, rows)).astype(np.complex128)
+                x_ext = x_ext + self._solve(residual, trans, rows)
+            return x_ext.astype(np.complex128)
+        x_hi, x_lo = np.array(x, dtype=np.complex128), np.zeros(x.shape, dtype=np.complex128)
         for _ in range(EXTENDED_REFINEMENT_STEPS):
-            residual = (rhs_ext - self._apply_extended(x_ext, trans, rows)).astype(np.complex128)
-            x_ext = x_ext + self._solve(residual, trans, rows)
-        return x_ext.astype(np.complex128)
+            residual = self._residual_dd(rhs, x_hi, x_lo, trans, rows)
+            x_hi, x_lo = _dd_add(x_hi, x_lo, self._solve(residual, trans, rows))
+        return x_hi
 
     def _unpermute(self, x):
         if self.perm is None:
@@ -433,7 +544,7 @@ class Factorisations:
         op(A_f)^-1 rhs[f] for every frequency f; rhs (F, n) or (F, n, k).
 
         refine: False, True (REFINEMENT_STEPS steps, residual in float64), "extended" (EXTENDED_REFINEMENT_STEPS
-        steps of mixed-precision refinement: residual and accumulated solution in np.longdouble, corrections from
+        steps of mixed-precision refinement: residual and accumulated solution in double-double, corrections from
         the float64 factorisation), or "adaptive": one float64 step, then the extended steps only for the
         frequencies where needs_extended(x, dx) is True (x the refined solution, dx its float64 correction, both
         (F, n, k) in the original ordering; dx is a conservative estimate of the remaining error of x).

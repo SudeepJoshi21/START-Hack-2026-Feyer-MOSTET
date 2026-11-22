@@ -60,13 +60,13 @@ NOISE_FACTOR = UNIT_VACUUM * H_PLANCK * F0 * 0.25
 REFINE = {"signal": "adaptive", "weights": True, "adjoint": True}
 """
 Iterative refinement of the SuperLU solves: True = adjoint.REFINEMENT_STEPS step(s) with a float64 residual,
-"extended" = adjoint.EXTENDED_REFINEMENT_STEPS steps of mixed-precision refinement (residual in np.longdouble).
+"extended" = adjoint.EXTENDED_REFINEMENT_STEPS steps of mixed-precision refinement (residual and solution in double-double; np.longdouble until the-prime-model-nada).
 
 Signal solve: "extended". On Voyager in frequency-modulation mode the detected sidebands are tiny next to other
 components of x (cond(A) 5.7e11), and a float64 residual cannot resolve them: sensitivity 1.1e-2 off the
 extended-precision reference (original dense code: 3.7e-1 off); with 2 extended steps 8.6e-6 (floor of a float64
 read-out of the exact solution: 6.1e-6). Benchmark workload: 6e-10 either way. Cost: 55-75 ms per forward pass
-(first call in a fresh process: one more batch of solves + longdouble residual products); interleaved official
+(first call in a fresh process: one more batch of solves + extended-precision residual products); interleaved official
 benchmark on a loaded node +0.05..0.26 s. An adaptive switch was tried: a float64 componentwise error estimate flags
 every frequency of every setup (structurally tiny components), so only the read-out could tell; not adopted.
 Set to True for the float64-only variant (~60 ms faster; the judged workload passes either way, 5.374e-6).
@@ -941,7 +941,7 @@ power_detector.defvjp(_power_detector_fwd, _power_detector_bwd)
 SIGNAL_ERROR_TOLERANCE = 1e-7
 """
 Adaptive refinement of the signal solve (REFINE["signal"] = "adaptive"): frequencies whose estimated relative error
-of the detected signal exceeds this get the mixed-precision (longdouble) refinement steps; the others keep one
+of the detected signal exceeds this get the mixed-precision (double-double) refinement steps; the others keep one
 float64 refinement step. The estimate uses that step's correction, which bounds the remaining error of the refined
 solution from above (benchmark workload: at most 5.2e-8, true error of the refined solution ~7e-10).
 """
