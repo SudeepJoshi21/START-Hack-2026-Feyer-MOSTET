@@ -1,13 +1,13 @@
-# Faster Physics: the benchmark that did not run now takes 2.09 s
+# Faster Physics: the benchmark that did not run now takes 1.82 s
 
 **START Hack Munich 2026 · Feyer challenge · team repo `SudeepJoshi21/START-Hack-2026-Feyer-MOSTET`, branch `main`**
 
 > Every timing below was measured on **one machine**: an AMD Ryzen AI 7 350 laptop with 16 GB RAM, running WSL2 with 7 GB of
 > it available, pinned to one core with the unchanged `benchmark.py --cpus 1`.
 > - **Main benchmark** (`benchmark.py`; 101 frequencies, 193 gradients, float64): the original
->   code **does not run** here, because it needs ~14 GB and WSL2 has 7 GB. Ours takes **2.09 s** (median of 9, all PASS). For
+>   code **does not run** here, because it needs ~14 GB and WSL2 has 7 GB. Ours takes **1.82 s** (median of 9, all PASS). For
 >   reference only, the organisers' published baseline on their 32 GB Xeon is 44.2 s.
-> - **aLIGO benchmark** (organisers' `benchmark_aligo.py`): **71.9 s → 1.3 s, ~55× faster** on the same machine.
+> - **aLIGO benchmark** (organisers' `benchmark_aligo.py`): **71.9 s → 1.4 s, ~50× faster** on the same machine.
 >
 > All judging criteria pass, and the physics results are unchanged.
 
@@ -17,9 +17,9 @@
 
 | | Original code | Our pure-JAX version | Our `main` |
 |---|---:|---:|---:|
-| **First-run total (scored)** | does not fit (needs ~14 GB) | 28.8 s | **2.09 s** median of 9 (1.76–2.96 s) |
-| Compile (all programs) | — | 26.0 s | 0.32 s |
-| Forward + gradient (first run) | — | 0.53 s | 0.72 s |
+| **First-run total (scored)** | does not fit (needs ~14 GB) | 28.8 s | **1.82 s** median of 9 (1.75–4.73 s; 4.73 s was a cold start) |
+| Compile (all programs) | — | 26.0 s | 0.34 s |
+| Forward + gradient (first run) | — | 0.53 s | 0.44 s |
 | Setup (imports + build) | — | 2.3 s | 1.0 s |
 | Max \|Δ ln S\| vs reference (limit 1e-5) | 5.374e-6 (organisers) | 5.374e-6 | 5.374e-6 |
 
@@ -27,10 +27,10 @@
 
 | | Original code | Our `main` |
 |---|---:|---:|
-| **First-run total (scored)** | 71.9 s | **1.29 / 1.33 s** |
-| Compile (all programs) | 65.2 s | 0.27 s |
-| Forward + gradient (first run) | 2.9 s | 0.12 s |
-| Setup (imports + build) | 3.8 s | 0.9 s |
+| **First-run total (scored)** | 71.9 s | **1.43 s** median of 3 (1.28–1.51 s) |
+| Compile (all programs) | 65.2 s | 0.34 s |
+| Forward + gradient (first run) | 2.9 s | 0.07 s |
+| Setup (imports + build) | 3.8 s | 1.0 s |
 | Max \|Δ ln S\| vs reference (aLIGO limit 1e-6) | 1.2e-10 | 3.8e-11 |
 
 Reports and plots: `benchmarks/laptop/` (index in `benchmarks/laptop/README.md`).
@@ -43,7 +43,7 @@ Notes:
   it to NumPy/SciPy.
 - **How the laptop numbers vary:** the times swing by about ±20 % from run to run (Python imports and the first call; see
   `docs/FINDINGS.md` §1.10), so we report the median of 9 runs.
-- **Without the XLA compile options** (`DIFFEROMETOR_XLA_OPT0=0`): 2.6 / 3.1 s.
+- **Without the XLA compile options** (`DIFFEROMETOR_XLA_OPT0=0`): 2.52 / 2.46 s.
 - **The aLIGO original** was measured once on this laptop.
 
 ## What made it slow
@@ -85,13 +85,13 @@ Variations on the laptop (`scripts/scenarios.py time`, fresh process, 1 core, ou
 
 | Setup | Size | Total | Fast path |
 |---|---|---:|---|
-| Benchmark design, all variables changed by ±10 % | 751 unknowns, 193 variables | 4.59 s (first run after a pause: imports alone 2.6 s) | yes |
-| Random 3×3 UIFO (different topology) | 767 unknowns, 251 variables | 1.82 s | yes |
-| Second trained UIFO | 769 unknowns, 192 variables | 1.80 s | yes |
-| Benchmark setup, wideband 10 Hz–10 kHz | 751 unknowns, 193 variables | 1.58 s | yes |
-| Glass beamsplitter, total internal reflection (edge case) | 751 unknowns, 193 variables | 1.70 s | yes |
-| Voyager | 161 unknowns, 48 variables | 1.13 s | yes |
-| aLIGO (organisers' test) | 29 variables | 1.29–1.33 s | yes |
+| Benchmark design, all variables changed by ±10 % | 751 unknowns, 193 variables | 2.06 s | yes |
+| Random 3×3 UIFO (different topology) | 767 unknowns, 251 variables | 2.13 s | yes |
+| Second trained UIFO | 769 unknowns, 192 variables | 1.74 s | yes |
+| Benchmark setup, wideband 10 Hz–10 kHz | 751 unknowns, 193 variables | 1.61 s | yes |
+| Glass beamsplitter, total internal reflection (edge case) | 751 unknowns, 193 variables | 1.59 s | yes |
+| Voyager | 161 unknowns, 48 variables | 1.27 s | yes |
+| aLIGO (organisers' test) | 29 variables | 1.43 s (median of 3) | yes |
 
 All of these have finite outputs and a non-zero gradient.
 
