@@ -85,10 +85,7 @@ fi
 echo
 [ "$(git rev-parse HEAD)" = "$START" ] && [ -z "$(git status --porcelain --untracked-files=no)" ] || bad "code changed during the gate run (HEAD or tracked files): result not attributable to $START"
 if [ $FAIL = 0 ]; then
-  # Ledger read by scripts/pre-push (git hook): only simulator states that passed this gate may be pushed.
-  LEDGER="$(git rev-parse --git-common-dir)/gate-passed"
-  echo "$(git rev-parse $START:differometor) $(git rev-parse $START:benchmark.py) $START $(date -u +%FT%TZ) REPEATS=$REPEATS SCENARIOS=${SCENARIOS:-1}" >> "$LEDGER"
-  echo "GATE: ALL PASS (commit ${START:0:7}); recorded in $LEDGER"
+  echo "GATE: ALL PASS (commit ${START:0:7})"
 else
   echo "GATE: FAILED"
 fi

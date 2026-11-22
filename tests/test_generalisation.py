@@ -14,7 +14,6 @@ Run:  PYTHONPATH=. python tests/test_generalisation.py      (a few minutes on on
    equal those of a fresh process bit for bit.
 """
 
-import json
 import os
 import subprocess
 import sys
