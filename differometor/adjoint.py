@@ -172,8 +172,9 @@ Without it the SuperLU noise weights of Voyager (an example setup, not scored) d
 Cost: one sparse product + one triangular solve per frequency.
 """
 
-EXTENDED_REFINEMENT_STEPS = 2
-"""Steps of mixed-precision refinement (residual in np.longdouble) for solves called with refine="extended"."""
+EXTENDED_REFINEMENT_STEPS = 3
+"""Steps of mixed-precision refinement (residual in np.longdouble) for refine="extended" and for the frequencies the
+adaptive mode flags (3: with SuperLU Relax=1, 2 steps left Voyager frequency modulation at 1.1e-5, 3 steps 7.8e-6)."""
 
 
 _SUPERLU = None
