@@ -481,10 +481,6 @@ def host_plan(a: dict) -> HostPlan | None:
     if not _unique(mr, mc, cn + 1):
         return None
     plan["carrier"].update(base=carrier_base.astype(np.complex128), matrix_rows=mr, matrix_cols=mc)
-    # sparsity pattern of the carrier system (base non-zeros and written positions, without the right-hand side)
-    in_matrix = mc < cn
-    flat = np.unique(np.concatenate([np.flatnonzero(carrier_base[:, :cn]), mr[in_matrix] * cn + mc[in_matrix]]))
-    plan["carrier"].update(pattern_rows=flat // cn, pattern_cols=flat % cn)
 
     q_rows, q_cols = (x.astype(np.int64) for x in n("noise_system_matrix_indices"))
     plan["noise"].update(
@@ -575,12 +571,8 @@ def _forward(plan, optimized, parameters, carrier_values, signal_values):
     yc = _component_values(pc, cp["groups"])
     m = np.broadcast_to(cp["base"], (pc.shape[0],) + cp["base"].shape).copy()
     m[:, cp["matrix_rows"], cp["matrix_cols"]] = yc[:, cp["outputs"]]
-    # sparse LU (SuperLU) on the carrier pattern (~680 of 286^2 entries for the benchmark), one refinement step;
-    # the factorisation is reused for the transposed solve of the backward pass
-    carrier_factors = _adjoint.Factorisations(m[:, cp["pattern_rows"], cp["pattern_cols"]], cp["pattern_rows"],
-                                              cp["pattern_cols"], m.shape[1])
-    carrier = carrier_factors.solve(m[:, :, -1], "N", True)          # (CV, CN)
-    s["pc"], s["carrier_matrix"], s["carrier"], s["carrier_factors"] = pc, m, carrier, carrier_factors
+    carrier = np.linalg.solve(m[:, :, :-1], m[:, :, -1:])[..., 0]   # (CV, CN)
+    s["pc"], s["carrier_matrix"], s["carrier"] = pc, m, carrier
     cv, cn = carrier.shape
 
     # signal system on its pattern (WS3 recipe)
@@ -704,7 +696,7 @@ def _backward(plan, optimized, parameters, carrier_values, signal_values, carrie
     # carrier solve: carrier = A^-1 b  ->  lam = A^-T carrier_bar, A_bar = -lam carrier^T, b_bar = lam
     carrier_bar += carrier_bar_out.T
     m = s["carrier_matrix"]
-    lam = s["carrier_factors"].solve(carrier_bar, "T", True)
+    lam = np.linalg.solve(np.swapaxes(m[:, :, :-1], 1, 2), carrier_bar[..., None])[..., 0]
     m_bar = np.concatenate([-lam[:, :, None] * carrier[:, None, :], lam[:, :, None]], axis=2)   # (CV, CN, CN+1)
     yc_bar = np.zeros((cv, sum(gr.shape[0] for gr in cp["groups"]) * 4), dtype=np.complex128)
     _scatter_add(yc_bar, cp["outputs"].astype(np.int64), m_bar[:, cp["matrix_rows"], cp["matrix_cols"]])
